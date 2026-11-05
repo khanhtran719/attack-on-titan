@@ -1,0 +1,25 @@
+{
+  "name": "titan-hunter-3d",
+  "private": true,
+  "version": "1.0.0",
+  "description": "High-speed 3D ODM Aerial Action Game built with Three.js, TypeScript, and Rapier 3D",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "generate-assets": "node scripts/generate-glb-assets.mjs"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.14.0",
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.170.0",
+    "playwright-core": "^1.64.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.5"
+  }
+}

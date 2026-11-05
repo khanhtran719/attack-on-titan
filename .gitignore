@@ -1,0 +1,73 @@
+# Dependencies
+node_modules
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# Maintained AI guidance; ignore unrelated local AI data
+.ai/*
+!.ai/overview.md
+!.ai/rules.md
+!.ai/architecture.md
+!.ai/conventions.md
+!.ai/workflow.md
+!.ai/module-template.md
+!.ai/project-profile.md
+!.ai/code-intelligence.md
+
+# OpenCode local folders
+.opencode/
+.opencode-cache/
+.opencode-tmp/
+opencode.jsonc
+
+# Local code intelligence index (rebuild with npm run codegraph:index)
+/.gitnexus/
+
+# Build outputs
+dist
+build
+!/build/
+*.tsbuildinfo
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode
+.idea
+*.sublime-project
+*.sublime-workspace
+
+# Testing
+coverage
+.nyc_output
+
+# Environment variables
+.env
+.env.staging
+.env.local
+.env.*.local
+
+# Temporary files
+tmp
+temp
+*.tmp
+
+# Local operations journal and raw infrastructure evidence.
+# This directory may contain real hostnames, IPs, command output and incident notes.
+/.local-ops/
+
+# Legacy collector output path. New reports must be moved into .local-ops/server-reports/.
+/docs/server-reports/
