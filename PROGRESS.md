@@ -1,6 +1,6 @@
 # TITAN HUNTER 3D — PROJECT PROGRESS REPORT
 
-## 1. Completed Milestones (Vertical Slice — Phases 1 to 5)
+## 1. Completed Milestones (Vertical Slice — Phases 1 to 6)
 
 ### Phase 1 — Playable Movement & 3D World (`COMPLETED`)
 - [x] **Project Architecture:** Vite + TypeScript + Three.js + Rapier 3D (`@dimforge/rapier3d-compat`) + Vitest setup with fixed-timestep physics (`60 Hz`) and decoupled render loop.
@@ -31,16 +31,30 @@
 ### Phase 5 — Audio, Polish, Optimization & Verification (`COMPLETED`)
 - [x] **Procedural Web Audio API Synthesizer:** Hook fire/latch, gas burst, sword slash, critical nape chime, Titan footsteps & roars, and resupply audio.
 - [x] **Optimization & Debug Tools:** `InstancedMesh` foliage, `ObjectPool` particle/VFX recycling, Low/Medium/High quality presets, and real-time Debug Overlay (`60 FPS` at `~115–135 draw calls`).
-- [x] **Automated Verification:** 7 Vitest unit/integration suites (`npm test`) and automated headless Chrome WebGL gameplay verification with real screenshots (`0 console/runtime errors`).
+- [x] **Automated Verification:** Vitest unit/integration suites (`npm test`) and automated headless Chrome WebGL gameplay verification with real screenshots (`0 console/runtime errors`).
+
+### Phase 6 — Real-Time Multiplayer Co-op (2–4 Players) (`COMPLETED`)
+- [x] **Three-Layer Authoritative Architecture (`src/shared/`, `src/server/`, `src/network/`):**
+  - Headless Node.js + TypeScript + Colyseus (`@colyseus/core`, `@colyseus/ws-transport`) + Rapier 3D server simulating at `60 Hz` and broadcasting state snapshots at `20 Hz`.
+  - Pure deterministic city collider layout (`populateCityPhysicsWorld`) shared between client and server.
+- [x] **Lobby & Room System (`CoopHunterRoom` + `UIManager`):**
+  - Create Public/Private Room, Join by 6-Character Room Code (`/api/resolve/:code`), Public Rooms browser (`/api/rooms`), max 4 players per room (`5th player rejected`), player nickname sanitization, Ready/Unready toggle, Leader-only start match, and `sessionToken` reconnection grace period (`20s`).
+- [x] **Real-Time Player & Dual ODM Synchronization:**
+  - Client-Side Prediction (CSP) + Server Reconciliation with smooth correction decay.
+  - Remote 3D character rigs (`RemotePlayerManager`) with `85ms` buffered snapshot interpolation + `180ms` bounded dead-reckoning extrapolation, 18-animation sync, independent Left/Right 3D ODM steel cables & anchors, and gas boost particle trails.
+- [x] **Shared Server-Authoritative Titan AI, Lag-Compensated Combat & Co-op Revive:**
+  - Multi-player threat/aggro target selection & dynamic aggro switching (`ServerTitan`).
+  - Bounded 24-tick (`400ms`) hitbox history for lag-compensated strike validation, anti-double-kill protection, and Kill + Assist attribution (`damageContributors`).
+  - Co-op **Downed & Revive** (`Hold E` within `5m` for `2.2s` to revive downed teammates to `50% HP`; respawn fallen teammates on next wave), Team Ping (`KeyG`), Quick Chat (`Digit1`–`Digit4`), and pause/hit-stop isolation.
+- [x] **Multi-Client Verification:** 12 Vitest unit & integration tests (`tests/gameplay.test.ts` + `tests/multiplayer.test.ts`) + 4-client multi-browser Playwright E2E verification across 50/100/200ms simulated latency (`0 console/page errors`).
 
 ---
 
-## 2. Post-Vertical-Slice Roadmap (Future Enhancements)
+## 2. Post-Multiplayer Roadmap (Future Enhancements)
 
-- [ ] **Additional Game Modes:** Escort Supply Wagon, Defend the Outer Gatehouse (Wall Integrity bar), and Boss Raid (Armored / Beast Titan).
-- [ ] **AI Squadmates:** Autonomous Scout NPCs that follow squad orders (`Engage`, `Distract Limbs`, `Regroup`).
+- [ ] **Additional Co-op Operations:** Escort Supply Wagon, Defend the Outer Gatehouse (Shared Wall Integrity bar), and 4-Player Boss Raid (Armored / Colossal Titan).
+- [ ] **Voice Chat / WebRTC Spatial Audio:** Optional proximity voice chat for squad coordination.
 - [ ] **Equipment Upgrade Tree:** Spend mission score to upgrade Gas Cylinder Capacity, Wire Range, Anchor Reel Torque, and Mono-Blade Durability.
-- [ ] **Custom Blender High-Poly Character/Titan Sculpt Imports:** Drop-in replacement `.glb` meshes via `AssetLoader`.
 
 ---
 
@@ -48,3 +62,4 @@
 
 - **Pointer Lock in Browsers:** Browser security requires a user mouse click inside the canvas to engage `PointerLock` for 360° mouse camera control. Pressing `Z` and `X` is also supported alongside `Left Mouse` and `Right Mouse` for grappling.
 - **Frontal Nape Guard:** By design, attacking a Titan's neck from the front glances off (`GLANCED OFF FRONT!`). Players must swing behind the Titan's rear hemisphere (or sever its legs first to drop it to its knees) to execute a lethal Nape strike.
+- **Pause & Hit-Stop Isolation in Co-op:** Opening the `Esc` menu or triggering a blade impact in Multiplayer Co-op never pauses the shared room simulation or network updates.

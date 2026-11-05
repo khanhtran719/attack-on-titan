@@ -82,7 +82,7 @@ export class SaveManager {
   }
 
   public recordMissionResult(
-    mode: 'training' | 'hunt',
+    mode: 'training' | 'hunt' | 'coop',
     score: number,
     rank: string,
     kills: number,

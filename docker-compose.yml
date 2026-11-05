@@ -1,0 +1,47 @@
+services:
+  # Authoritative Colyseus + Rapier 3D Multiplayer Co-op Server (ws://localhost:2567)
+  titan-hunter-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
+    container_name: titan-hunter-3d-server
+    ports:
+      - "2567:2567"
+    environment:
+      - PORT=2567
+      - NODE_ENV=production
+    restart: unless-stopped
+
+  # Production WebGL Client (Nginx serving optimized bundle at http://localhost:8080)
+  titan-hunter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    container_name: titan-hunter-3d-prod
+    ports:
+      - "8080:80"
+    depends_on:
+      - titan-hunter-server
+    restart: unless-stopped
+
+  # Development Mode with Hot-Reload + Multiplayer Server (docker compose --profile dev up)
+  titan-hunter-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    container_name: titan-hunter-3d-dev
+    profiles:
+      - dev
+    ports:
+      - "5173:5173"
+      - "2567:2567"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - PORT=2567
+    command: ["npm", "run", "dev:mp", "--", "--host", "0.0.0.0", "--port", "5173"]

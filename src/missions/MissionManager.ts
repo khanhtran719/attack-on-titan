@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { GAME_CONFIG } from '../config/GameConfig';
 import { TitanEntity } from '../enemies/TitanEntity';
-import { TitanVariant } from '../enemies/TitanRigBuilder';
+import { TitanVariant, TitanZoneType } from '../enemies/TitanRigBuilder';
 import { PlayerController } from '../player/PlayerController';
+import { NetRoomState } from '../shared/Protocol';
+import { lerpAngle } from '../utils/MathUtils';
 import { TrainingRing } from '../world/CityBuilder';
 
-export type GameMode = 'training' | 'hunt';
+export type GameMode = 'training' | 'hunt' | 'coop';
 
 export interface MissionStatus {
   mode: GameMode;
@@ -85,6 +87,11 @@ export class MissionManager {
       dummy.yaw = 0; // Facing South (+Z) initially; player can swing behind its back (-Z)
       this.titans.push(dummy);
       this.scene.add(dummy.rig.rootGroup);
+    } else if (mode === 'coop') {
+      this.currentWave = 1;
+      this.maxWaves = 2;
+      this.totalTargetKills = 7;
+      // In co-op mode, Titans are spawned and controlled authoritatively by the server
     } else {
       this.currentWave = 1;
       this.maxWaves = 2;
@@ -164,6 +171,88 @@ export class MissionManager {
 
   public onPerfectDodge(): void {
     this.score += 250;
+  }
+
+  /**
+   * Synchronizes shared Titans and wave/mission status from the authoritative server snapshot in Co-op mode.
+   */
+  public syncCoopFromServer(
+    snapshot: NetRoomState,
+    dt: number,
+    playerPos: THREE.Vector3,
+    onFootstep?: (dist: number) => void
+  ): void {
+    this.mode = 'coop';
+    this.elapsedSeconds = snapshot.elapsedSeconds;
+    this.score = snapshot.teamScore;
+    this.kills = snapshot.totalKills;
+    this.totalTargetKills = snapshot.targetKills;
+    this.currentWave = snapshot.wave;
+    this.maxWaves = snapshot.maxWaves;
+    this.completed = snapshot.phase === 'victory';
+    this.failed = snapshot.phase === 'defeat';
+
+    const serverIds = new Set(Object.keys(snapshot.titans));
+
+    // Remove Titans no longer present on server
+    for (let i = this.titans.length - 1; i >= 0; i--) {
+      const t = this.titans[i];
+      if (!serverIds.has(t.id)) {
+        this.scene.remove(t.rig.rootGroup);
+        this.titans.splice(i, 1);
+      }
+    }
+
+    // Create or update Titans from snapshot
+    for (const netTitan of Object.values(snapshot.titans)) {
+      let titan = this.titans.find((t) => t.id === netTitan.id);
+      if (!titan) {
+        titan = new TitanEntity(
+          netTitan.id,
+          netTitan.variant,
+          new THREE.Vector3(...netTitan.position),
+          netTitan.heightMeters,
+          false
+        );
+        titan.yaw = netTitan.yaw;
+        this.titans.push(titan);
+        this.scene.add(titan.rig.rootGroup);
+      }
+
+      const targetPos = new THREE.Vector3(...netTitan.position);
+      if (titan.position.distanceTo(targetPos) > 18) {
+        titan.position.copy(targetPos);
+      } else {
+        titan.position.lerp(targetPos, Math.min(1, dt * 16));
+      }
+      titan.yaw = lerpAngle(titan.yaw, netTitan.yaw, Math.min(1, dt * 16));
+      titan.velocity.set(...netTitan.velocity);
+      titan.aiState = netTitan.aiState;
+      titan.playAnimation(netTitan.anim, 0.16);
+
+      for (const zone of Object.keys(netTitan.hurtboxes) as TitanZoneType[]) {
+        const netZ = netTitan.hurtboxes[zone];
+        const hb = titan.hurtboxes[zone];
+        if (hb && netZ) {
+          hb.hp = netZ.hp;
+          hb.maxHp = netZ.maxHp;
+          hb.disabledTimer = netZ.disabledTimer;
+          if (zone === 'LeftArm') {
+            titan.rig.bonesByName['LeftLowerArm']?.scale.setScalar(
+              netZ.disabledTimer > 0 ? 0.35 : 1.0
+            );
+          } else if (zone === 'RightArm') {
+            titan.rig.bonesByName['RightLowerArm']?.scale.setScalar(
+              netZ.disabledTimer > 0 ? 0.35 : 1.0
+            );
+          }
+        }
+      }
+
+      titan.update(dt, () => {
+        onFootstep?.(titan!.position.distanceTo(playerPos));
+      });
+    }
   }
 
   public update(
@@ -272,6 +361,24 @@ export class MissionManager {
     }
 
     const remaining = Math.max(0, this.totalTargetKills - this.kills);
+    if (this.mode === 'coop') {
+      return {
+        mode: 'coop',
+        title: `CO-OP VANGUARD OPERATION — WAVE ${this.currentWave}/${this.maxWaves}`,
+        objectiveText: `Eliminate District Titans with Squad (${this.kills}/${this.totalTargetKills})`,
+        subText: `${remaining} Hostile Titan(s) remaining. Press [G] to Ping Target, [1-4] Quick Chat, [Hold E] near downed allies to Revive.`,
+        kills: this.kills,
+        targetKills: this.totalTargetKills,
+        wave: this.currentWave,
+        maxWaves: this.maxWaves,
+        score: this.score,
+        elapsedSeconds: this.elapsedSeconds,
+        completed: this.completed,
+        failed: this.failed,
+        rank,
+      };
+    }
+
     return {
       mode: 'hunt',
       title: `DEFENSE OF VALKENBURG — WAVE ${this.currentWave}/${this.maxWaves}`,

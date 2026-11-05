@@ -14,6 +14,9 @@ export interface InputState {
   cycleZoneDelta: number;
   resupplyJustPressed: boolean;
   interactJustPressed: boolean;
+  interactHeld: boolean;
+  pingJustPressed: boolean;
+  quickChatKey: string | null;
   pauseJustPressed: boolean;
   mouseDeltaX: number;
   mouseDeltaY: number;
@@ -156,6 +159,17 @@ export class InputManager {
       cycleZoneDelta: this.wheelDelta + cycleKeyDelta,
       resupplyJustPressed: this.keysJustPressed.has('KeyR'),
       interactJustPressed: this.keysJustPressed.has('KeyE'),
+      interactHeld: this.keysDown.has('KeyE'),
+      pingJustPressed: this.keysJustPressed.has('KeyG'),
+      quickChatKey: this.keysJustPressed.has('Digit1')
+        ? '1'
+        : this.keysJustPressed.has('Digit2')
+          ? '2'
+          : this.keysJustPressed.has('Digit3')
+            ? '3'
+            : this.keysJustPressed.has('Digit4')
+              ? '4'
+              : null,
       pauseJustPressed:
         this.keysJustPressed.has('Escape') || this.keysJustPressed.has('KeyP'),
       mouseDeltaX: this.mouseDeltaX,
