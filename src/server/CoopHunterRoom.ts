@@ -28,6 +28,12 @@ import {
 } from '../shared/Protocol';
 import { ServerPlayerTarget, ServerTitan } from '../shared/ServerTitanSim';
 import {
+  findBestWorldGrapplePoint,
+  HookFireDebugInfo,
+  HookFireResultReason,
+  validateServerWorldAnchorHint,
+} from '../shared/WorldGrappleSolver';
+import {
   calculateStrikeDamage,
   clamp,
   evaluateNapeApproachCos,
@@ -87,6 +93,10 @@ interface ServerPlayerSession {
   invulnerableUntilMs: number;
   attackActiveUntilMs: number;
   nextAttackAllowedMs: number;
+  leftHookRetryAfterMs: number;
+  rightHookRetryAfterMs: number;
+  lastLeftHookDebug: HookFireDebugInfo | null;
+  lastRightHookDebug: HookFireDebugInfo | null;
   inputQueue: C2S_InputFrame[];
   packetsThisSecond: number;
   rateWindowStartMs: number;
@@ -114,6 +124,7 @@ export class CoopHunterRoom extends Room {
   public isPublic = true;
   public phase: RoomPhase = 'lobby';
   public leaderId = '';
+  public readonly hookDebugLog: HookFireDebugInfo[] = [];
 
   private physics!: PhysicsWorld;
   private cityLayout!: CityLayoutData;
@@ -288,6 +299,10 @@ export class CoopHunterRoom extends Room {
       invulnerableUntilMs: 0,
       attackActiveUntilMs: 0,
       nextAttackAllowedMs: 0,
+      leftHookRetryAfterMs: 0,
+      rightHookRetryAfterMs: 0,
+      lastLeftHookDebug: null,
+      lastRightHookDebug: null,
       inputQueue: [],
       packetsThisSecond: 0,
       rateWindowStartMs: Date.now(),
@@ -583,6 +598,9 @@ export class CoopHunterRoom extends Room {
       }
     }
 
+    // Keep Rapier world & QueryPipeline synchronized each authoritative tick
+    this.physics.step();
+
     // 2. Step Co-op Downed & Revive System
     this.stepDownedAndRevive(dt, nowMs);
 
@@ -678,43 +696,97 @@ export class CoopHunterRoom extends Room {
       ? new THREE.Vector3(...frame.camForward).normalize()
       : camFlatForward.clone();
 
-    // 1. Authoritative Left & Right Grappling Hook Fire / Release
-    if (frame.leftGrappleAction === 'fire' && player.gas > 1.0) {
-      const latched = this.tryLatchServerHook(
-        player,
-        player.leftHook,
-        camOrigin,
-        camAimDir,
-        camRight,
-        frame.lockedTitanId,
-        frame.lockedZone
-      );
-      if (latched) {
-        player.grounded = false;
-        if (player.velocity.y < 3.5) player.velocity.y += 3.5;
+    // 1. Authoritative Left & Right Grappling Hook Fire / Hold-Retry / Release
+    const wantsFireLeft =
+      frame.leftGrappleAction === 'fire' ||
+      (frame.leftGrappleAction === 'hold' &&
+        !player.leftHook.active &&
+        nowMs >= player.leftHookRetryAfterMs);
+
+    if (wantsFireLeft) {
+      if (player.gas > 1.0) {
+        player.leftHookRetryAfterMs = nowMs + 110;
+        const latched = this.tryLatchServerHook(
+          player,
+          player.leftHook,
+          camOrigin,
+          camAimDir,
+          camRight,
+          frame.lockedTitanId,
+          frame.lockedZone,
+          frame.leftGrappleTarget,
+          frame.seq
+        );
+        if (latched) {
+          player.grounded = false;
+          if (player.velocity.y < 3.5) player.velocity.y += 3.5;
+        }
+      } else {
+        this.recordServerHookDebug(
+          player,
+          'left',
+          frame.seq,
+          false,
+          'REJECT_NO_GAS',
+          null,
+          0
+        );
       }
-    } else if (frame.leftGrappleAction === 'release') {
+    } else if (
+      frame.leftGrappleAction === 'release' ||
+      frame.leftGrappleAction === 'none'
+    ) {
       player.leftHook.active = false;
       player.leftHook.isTaut = false;
+      player.leftHook.attachedTitanId = null;
+      player.leftHook.attachedZone = null;
+      player.leftHookRetryAfterMs = 0;
     }
 
-    if (frame.rightGrappleAction === 'fire' && player.gas > 1.0) {
-      const latched = this.tryLatchServerHook(
-        player,
-        player.rightHook,
-        camOrigin,
-        camAimDir,
-        camRight,
-        frame.lockedTitanId,
-        frame.lockedZone
-      );
-      if (latched) {
-        player.grounded = false;
-        if (player.velocity.y < 3.5) player.velocity.y += 3.5;
+    const wantsFireRight =
+      frame.rightGrappleAction === 'fire' ||
+      (frame.rightGrappleAction === 'hold' &&
+        !player.rightHook.active &&
+        nowMs >= player.rightHookRetryAfterMs);
+
+    if (wantsFireRight) {
+      if (player.gas > 1.0) {
+        player.rightHookRetryAfterMs = nowMs + 110;
+        const latched = this.tryLatchServerHook(
+          player,
+          player.rightHook,
+          camOrigin,
+          camAimDir,
+          camRight,
+          frame.lockedTitanId,
+          frame.lockedZone,
+          frame.rightGrappleTarget,
+          frame.seq
+        );
+        if (latched) {
+          player.grounded = false;
+          if (player.velocity.y < 3.5) player.velocity.y += 3.5;
+        }
+      } else {
+        this.recordServerHookDebug(
+          player,
+          'right',
+          frame.seq,
+          false,
+          'REJECT_NO_GAS',
+          null,
+          0
+        );
       }
-    } else if (frame.rightGrappleAction === 'release') {
+    } else if (
+      frame.rightGrappleAction === 'release' ||
+      frame.rightGrappleAction === 'none'
+    ) {
       player.rightHook.active = false;
       player.rightHook.isTaut = false;
+      player.rightHook.attachedTitanId = null;
+      player.rightHook.attachedZone = null;
+      player.rightHookRetryAfterMs = 0;
     }
 
     if (player.gas <= 0) {
@@ -997,16 +1069,49 @@ export class CoopHunterRoom extends Room {
     }
   }
 
+  private recordServerHookDebug(
+    player: ServerPlayerSession,
+    side: 'left' | 'right',
+    seq: number,
+    success: boolean,
+    reason: HookFireResultReason,
+    anchor: THREE.Vector3 | null,
+    distance: number,
+    surfaceLabel?: string
+  ): void {
+    const info: HookFireDebugInfo = {
+      side,
+      seq,
+      timestampMs: Date.now(),
+      success,
+      reason,
+      anchor: anchor ? [anchor.x, anchor.y, anchor.z] : null,
+      distance,
+      surfaceLabel,
+    };
+    if (side === 'left') {
+      player.lastLeftHookDebug = info;
+    } else {
+      player.lastRightHookDebug = info;
+    }
+    this.hookDebugLog.push(info);
+    if (this.hookDebugLog.length > 64) {
+      this.hookDebugLog.shift();
+    }
+  }
+
   private tryLatchServerHook(
     player: ServerPlayerSession,
     hook: ServerHook,
     camOrigin: THREE.Vector3,
     camForward: THREE.Vector3,
-    camRight: THREE.Vector3,
+    _camRight: THREE.Vector3,
     lockedTitanId: string | null,
-    lockedZone: TitanZoneType
+    lockedZone: TitanZoneType,
+    clientHintAnchor?: [number, number, number] | null,
+    seq = 0
   ): boolean {
-    const sideSign = hook.side === 'left' ? -1 : 1;
+    const sideSign: -1 | 1 = hook.side === 'left' ? -1 : 1;
     const maxRange = GAME_CONFIG.odm.maxGrappleRange;
 
     // 1. Locked Titan zone check
@@ -1023,12 +1128,22 @@ export class CoopHunterRoom extends Room {
           hook.restLength = Math.max(GAME_CONFIG.odm.minRopeLength, dist);
           hook.attachedTitanId = titan.id;
           hook.attachedZone = zone;
+          this.recordServerHookDebug(
+            player,
+            hook.side,
+            seq,
+            true,
+            'LOCKED_TITAN_LATCH',
+            zonePos,
+            dist,
+            `Titan ${titan.id} [${zone}]`
+          );
           return true;
         }
       }
     }
 
-    // 2. Raycast against any live Titan hurtbox
+    // 2. Raycast against any live Titan hurtbox along aim ray
     for (const titan of this.titans.values()) {
       if (titan.isDead()) continue;
       for (const zone of Object.keys(titan.hurtboxes) as TitanZoneType[]) {
@@ -1045,76 +1160,104 @@ export class CoopHunterRoom extends Room {
           hook.restLength = Math.max(GAME_CONFIG.odm.minRopeLength, dist);
           hook.attachedTitanId = titan.id;
           hook.attachedZone = zone;
+          this.recordServerHookDebug(
+            player,
+            hook.side,
+            seq,
+            true,
+            'RAY_TITAN_LATCH',
+            hb.worldPosition,
+            dist,
+            `Titan ${titan.id} [${zone}]`
+          );
           return true;
         }
       }
     }
 
-    // 3. Raycast against Server Rapier 3D world buildings/walls/towers
-    const biasedDir = camForward
-      .clone()
-      .addScaledVector(camRight, sideSign * 0.045)
-      .normalize();
-
-    const directHit = this.physics.castRay(
+    // 3. Authoritatively validate client's predicted world anchor hint (surface, distance, and Line-of-Sight)
+    const verifiedHint = validateServerWorldAnchorHint(
+      this.physics,
+      player.position,
       camOrigin,
-      biasedDir,
-      maxRange + 8,
-      true
+      camForward,
+      clientHintAnchor
     );
-    if (
-      directHit &&
-      directHit.point.distanceTo(player.position) <= maxRange &&
-      directHit.point.y >= 1.5
-    ) {
+    if (verifiedHint) {
       hook.active = true;
-      hook.anchorPos.copy(directHit.point);
+      hook.anchorPos.copy(verifiedHint.point);
       hook.restLength = Math.max(
         GAME_CONFIG.odm.minRopeLength,
-        player.position.distanceTo(directHit.point)
+        verifiedHint.distance
       );
       hook.attachedTitanId = null;
       hook.attachedZone = null;
+      this.recordServerHookDebug(
+        player,
+        hook.side,
+        seq,
+        true,
+        'CLIENT_HINT_VERIFIED',
+        verifiedHint.point,
+        verifiedHint.distance,
+        verifiedHint.surfaceLabel
+      );
       return true;
     }
 
-    // Assist cone fan
-    const up = new THREE.Vector3(0, 1, 0);
-    const right = new THREE.Vector3().crossVectors(biasedDir, up).normalize();
-    const orthoUp = new THREE.Vector3().crossVectors(right, biasedDir).normalize();
-    const cone = GAME_CONFIG.odm.aimAssistConeAngleRad;
-    const offsets: Array<[number, number]> = [
-      [sideSign * 0.5, 0.3],
-      [sideSign * 0.9, 0.0],
-      [sideSign * 1.2, 0.4],
-      [0, 0.6],
-      [0, -0.5],
-      [-sideSign * 0.5, 0.2],
-    ];
-    for (const [rx, ry] of offsets) {
-      const rayDir = biasedDir
-        .clone()
-        .addScaledVector(right, rx * cone)
-        .addScaledVector(orthoUp, ry * cone)
-        .normalize();
-      const hit = this.physics.castRay(camOrigin, rayDir, maxRange + 8, true);
-      if (
-        hit &&
-        hit.point.distanceTo(player.position) <= maxRange &&
-        hit.point.y >= 2.0
-      ) {
-        hook.active = true;
-        hook.anchorPos.copy(hit.point);
-        hook.restLength = Math.max(
-          GAME_CONFIG.odm.minRopeLength,
-          player.position.distanceTo(hit.point)
-        );
-        hook.attachedTitanId = null;
-        hook.attachedZone = null;
-        return true;
+    // 4. Shared Multi-Stage World Grapple Solver against Server Rapier 3D buildings/walls/towers
+    const worldHit = findBestWorldGrapplePoint(
+      this.physics,
+      camOrigin,
+      camForward,
+      player.position,
+      sideSign
+    );
+    if (worldHit) {
+      hook.active = true;
+      hook.anchorPos.copy(worldHit.point);
+      hook.restLength = Math.max(
+        GAME_CONFIG.odm.minRopeLength,
+        worldHit.distance
+      );
+      hook.attachedTitanId = null;
+      hook.attachedZone = null;
+      this.recordServerHookDebug(
+        player,
+        hook.side,
+        seq,
+        true,
+        worldHit.reason,
+        worldHit.point,
+        worldHit.distance,
+        worldHit.surfaceLabel
+      );
+      return true;
+    }
+
+    // 5. Determine specific rejection reason for diagnostics
+    const probeHit = this.physics.castRay(camOrigin, camForward, 320, false);
+    let rejectReason: HookFireResultReason = 'REJECT_NO_SURFACE_IN_CONE';
+    let rejectDist: number = maxRange;
+    if (probeHit) {
+      rejectDist = player.position.distanceTo(probeHit.point);
+      if (!probeHit.metadata.grappleable || probeHit.point.y < 1.2) {
+        rejectReason = 'REJECT_LOW_ELEVATION';
+      } else if (rejectDist > maxRange) {
+        rejectReason = 'REJECT_OUT_OF_RANGE';
       }
     }
 
+    this.recordServerHookDebug(
+      player,
+      hook.side,
+      seq,
+      false,
+      rejectReason,
+      null,
+      rejectDist,
+      probeHit?.metadata.label
+    );
     return false;
   }
 

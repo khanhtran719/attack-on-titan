@@ -40,6 +40,8 @@ export class PlayerController {
   public dodgeTimer = 0;
   public dodgeCooldownTimer = 0;
   public invulnerableTimer = 0;
+  private leftGrappleRetryTimer = 0;
+  private rightGrappleRetryTimer = 0;
 
   private prevVelocity: THREE.Vector3 = new THREE.Vector3();
   private lateralAccel = 0;
@@ -73,6 +75,8 @@ export class PlayerController {
     this.dodgeTimer = 0;
     this.dodgeCooldownTimer = 0;
     this.invulnerableTimer = 0;
+    this.leftGrappleRetryTimer = 0;
+    this.rightGrappleRetryTimer = 0;
     this.lateralAccel = 0;
 
     this.rig.rootGroup.position.copy(this.position);
@@ -190,6 +194,15 @@ export class PlayerController {
     if (this.invulnerableTimer > 0) {
       this.invulnerableTimer = Math.max(0, this.invulnerableTimer - dt);
     }
+    if (this.leftGrappleRetryTimer > 0) {
+      this.leftGrappleRetryTimer = Math.max(0, this.leftGrappleRetryTimer - dt);
+    }
+    if (this.rightGrappleRetryTimer > 0) {
+      this.rightGrappleRetryTimer = Math.max(
+        0,
+        this.rightGrappleRetryTimer - dt
+      );
+    }
 
     if (this.isDead()) {
       // Apply gravity so character falls to ground if killed mid-air
@@ -225,7 +238,14 @@ export class PlayerController {
     // =========================================================================
     // 1. Handle Left & Right Grappling Hooks (Independent Fire & Release)
     // =========================================================================
-    if (input.leftGrappleJustPressed && this.gas > 1.0) {
+    const wantsFireLeft =
+      input.leftGrappleJustPressed ||
+      (input.leftGrappleHeld &&
+        !odm.leftHook.active &&
+        this.leftGrappleRetryTimer <= 0);
+
+    if (wantsFireLeft && this.gas > 1.0) {
+      this.leftGrappleRetryTimer = 0.12;
       const fired = odm.tryFireHook(
         'left',
         camOrigin,
@@ -243,11 +263,21 @@ export class PlayerController {
         audio.playHookFire('left');
         audio.playHookLatch();
       }
-    } else if (!input.leftGrappleHeld && odm.leftHook.active) {
-      odm.releaseHook('left');
+    } else if (!input.leftGrappleHeld) {
+      this.leftGrappleRetryTimer = 0;
+      if (odm.leftHook.active) {
+        odm.releaseHook('left');
+      }
     }
 
-    if (input.rightGrappleJustPressed && this.gas > 1.0) {
+    const wantsFireRight =
+      input.rightGrappleJustPressed ||
+      (input.rightGrappleHeld &&
+        !odm.rightHook.active &&
+        this.rightGrappleRetryTimer <= 0);
+
+    if (wantsFireRight && this.gas > 1.0) {
+      this.rightGrappleRetryTimer = 0.12;
       const fired = odm.tryFireHook(
         'right',
         camOrigin,
@@ -265,8 +295,11 @@ export class PlayerController {
         audio.playHookFire('right');
         audio.playHookLatch();
       }
-    } else if (!input.rightGrappleHeld && odm.rightHook.active) {
-      odm.releaseHook('right');
+    } else if (!input.rightGrappleHeld) {
+      this.rightGrappleRetryTimer = 0;
+      if (odm.rightHook.active) {
+        odm.releaseHook('right');
+      }
     }
 
     // Out of gas detaches active hooks

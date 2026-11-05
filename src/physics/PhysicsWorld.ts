@@ -27,6 +27,12 @@ export class PhysicsWorld {
     metadata: ColliderMetadata;
   }> = [];
 
+  public static async create(): Promise<PhysicsWorld> {
+    const pw = new PhysicsWorld();
+    await pw.init();
+    return pw;
+  }
+
   public async init(): Promise<void> {
     await RAPIER.init();
     this.world = new RAPIER.World({ x: 0, y: GAME_CONFIG.physics.gravity, z: 0 });

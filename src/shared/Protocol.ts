@@ -135,6 +135,8 @@ export interface C2S_InputFrame {
   camRight: [number, number, number];
   leftGrappleAction: 'none' | 'fire' | 'hold' | 'release';
   rightGrappleAction: 'none' | 'fire' | 'hold' | 'release';
+  leftGrappleTarget?: [number, number, number] | null;
+  rightGrappleTarget?: [number, number, number] | null;
   lockedTitanId: string | null;
   lockedZone: TitanZoneType;
 }

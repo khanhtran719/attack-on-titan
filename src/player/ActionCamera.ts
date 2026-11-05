@@ -24,15 +24,47 @@ export class ActionCamera {
     );
   }
 
+  public reset(playerPos: THREE.Vector3, yaw = 0, pitch = 0.14): void {
+    this.yaw = yaw;
+    this.pitch = pitch;
+    this.shakeIntensity = 0;
+    this.shakeTimer = 0;
+    this.currentDistance = this.targetDistance;
+    this.smoothedPivot.set(
+      playerPos.x,
+      playerPos.y + GAME_CONFIG.camera.shoulderOffset.y,
+      playerPos.z
+    );
+    const forward = this.getForwardVector();
+    const rightDir = this.getRightVector();
+    const pivotWithShoulder = this.smoothedPivot
+      .clone()
+      .addScaledVector(rightDir, GAME_CONFIG.camera.shoulderOffset.x);
+    this.camera.position
+      .copy(pivotWithShoulder)
+      .addScaledVector(forward, -this.currentDistance);
+    this.camera.position.y = Math.max(0.55, this.camera.position.y);
+    this.camera.lookAt(
+      pivotWithShoulder.clone().addScaledVector(forward, 18.0)
+    );
+    this.camera.updateMatrixWorld();
+  }
+
   public addShake(intensity: number, duration = 0.18): void {
     this.shakeIntensity = Math.max(this.shakeIntensity, intensity);
     this.shakeTimer = Math.max(this.shakeTimer, duration);
   }
 
   public getForwardVector(): THREE.Vector3 {
-    const dir = new THREE.Vector3();
-    this.camera.getWorldDirection(dir);
-    return dir.normalize();
+    const cosPitch = Math.cos(this.pitch);
+    const sinPitch = Math.sin(this.pitch);
+    const sinYaw = Math.sin(this.yaw);
+    const cosYaw = Math.cos(this.yaw);
+    return new THREE.Vector3(
+      -sinYaw * cosPitch,
+      sinPitch,
+      -cosYaw * cosPitch
+    ).normalize();
   }
 
   public getFlatForwardVector(): THREE.Vector3 {
@@ -201,5 +233,6 @@ export class ActionCamera {
       dt
     );
     this.camera.updateProjectionMatrix();
+    this.camera.updateMatrixWorld();
   }
 }

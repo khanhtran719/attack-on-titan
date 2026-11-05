@@ -1,6 +1,9 @@
 import * as THREE from 'three';
-import { GAME_CONFIG } from '../config/GameConfig';
 import { PhysicsWorld } from '../physics/PhysicsWorld';
+import {
+  CityLayoutData,
+  populateCityPhysicsWorld,
+} from '../shared/CityLayout';
 
 export interface SupplyStation {
   id: string;
@@ -33,27 +36,30 @@ export class CityBuilder {
   public buildWorld(includeTrainingCourse = false): void {
     this.clearWorld();
 
-    const halfSize = GAME_CONFIG.world.citySize * 0.5; // 150m
+    // Populate Rapier 3D colliders from the single shared CityLayout source of truth
+    const layout = populateCityPhysicsWorld(this.physics);
+    this.titanSpawnPoints = layout.titanSpawnPoints.map((p) => p.clone());
+    this.patrolWaypoints = layout.patrolWaypoints.map((p) => p.clone());
 
     // 1. Ground & Cobblestone Plaza
-    this.buildGround(halfSize);
+    this.buildGroundVisuals(layout.halfSize);
 
     // 2. Outer Fortified Wall & Gatehouses
-    this.buildOuterWalls(halfSize);
+    this.buildOuterWallsVisuals(layout);
 
     // 3. Central Plaza Monument & Watchtowers
-    this.buildCentralPlaza();
+    this.buildWatchtowersVisuals(layout);
 
-    // 4. Modular European District Buildings (64 buildings across 4 quadrants + avenues)
-    this.buildCityDistricts(halfSize);
+    // 4. Modular European District Buildings
+    this.buildCityDistrictsVisuals(layout);
 
     // 5. Military Supply Stations (Resupply Depots)
-    this.buildSupplyStations();
+    this.buildSupplyStationsVisuals(layout);
 
     // 6. Instanced Trees, Rocks & Props
-    this.buildInstancedFoliage(halfSize);
+    this.buildInstancedFoliageVisuals(layout);
 
-    // 7. Optional Training Aerial Checkpoints & Dummy Towers
+    // 7. Optional Training Aerial Checkpoints
     if (includeTrainingCourse) {
       this.buildTrainingCourse();
     }
@@ -70,11 +76,15 @@ export class CityBuilder {
     this.patrolWaypoints = [];
   }
 
-  private createCobbleTexture(): THREE.CanvasTexture {
+  private createCobbleTexture(): THREE.Texture {
+    if (typeof document === 'undefined') {
+      return new THREE.Texture();
+    }
     const canvas = document.createElement('canvas');
     canvas.width = 256;
     canvas.height = 256;
-    const ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return new THREE.Texture();
     ctx.fillStyle = '#3a3d42';
     ctx.fillRect(0, 0, 256, 256);
 
@@ -93,11 +103,15 @@ export class CityBuilder {
     return tex;
   }
 
-  private createFacadeTexture(tintHex: string): THREE.CanvasTexture {
+  private createFacadeTexture(tintHex: string): THREE.Texture {
+    if (typeof document === 'undefined') {
+      return new THREE.Texture();
+    }
     const canvas = document.createElement('canvas');
     canvas.width = 256;
     canvas.height = 256;
-    const ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return new THREE.Texture();
 
     // Plaster background
     ctx.fillStyle = tintHex;
@@ -135,7 +149,7 @@ export class CityBuilder {
     return tex;
   }
 
-  private buildGround(halfSize: number): void {
+  private buildGroundVisuals(halfSize: number): void {
     const cobbleTex = this.createCobbleTexture();
     const groundGeo = new THREE.PlaneGeometry(halfSize * 2.4, halfSize * 2.4);
     const groundMat = new THREE.MeshStandardMaterial({
@@ -147,13 +161,6 @@ export class CityBuilder {
     groundMesh.rotation.x = -Math.PI / 2;
     groundMesh.receiveShadow = true;
     this.cityGroup.add(groundMesh);
-
-    // Physics ground slab
-    this.physics.addStaticBox(
-      new THREE.Vector3(0, -1.0, 0),
-      new THREE.Vector3(halfSize * 1.2, 1.0, halfSize * 1.2),
-      { type: 'ground', grappleable: false, label: 'City Ground' }
-    );
 
     // Main cross-avenue road strips
     const roadMat = new THREE.MeshStandardMaterial({
@@ -179,11 +186,7 @@ export class CityBuilder {
     this.cityGroup.add(ewRoad);
   }
 
-  private buildOuterWalls(halfSize: number): void {
-    const wallH = GAME_CONFIG.world.wallHeight;
-    const wallT = GAME_CONFIG.world.wallThickness;
-    const span = halfSize * 2 + wallT;
-
+  private buildOuterWallsVisuals(layout: CityLayoutData): void {
     const wallMat = new THREE.MeshStandardMaterial({
       color: 0x6c7078,
       roughness: 0.85,
@@ -194,14 +197,7 @@ export class CityBuilder {
       roughness: 0.9,
     });
 
-    const segments = [
-      { pos: new THREE.Vector3(0, wallH / 2, -halfSize), size: new THREE.Vector3(span, wallH, wallT) },
-      { pos: new THREE.Vector3(0, wallH / 2, halfSize), size: new THREE.Vector3(span, wallH, wallT) },
-      { pos: new THREE.Vector3(-halfSize, wallH / 2, 0), size: new THREE.Vector3(wallT, wallH, span) },
-      { pos: new THREE.Vector3(halfSize, wallH / 2, 0), size: new THREE.Vector3(wallT, wallH, span) },
-    ];
-
-    for (const seg of segments) {
+    for (const seg of layout.walls) {
       const mesh = new THREE.Mesh(
         new THREE.BoxGeometry(seg.size.x, seg.size.y, seg.size.z),
         wallMat
@@ -210,15 +206,12 @@ export class CityBuilder {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.cityGroup.add(mesh);
-
-      this.physics.addStaticBox(
-        seg.pos,
-        new THREE.Vector3(seg.size.x / 2, seg.size.y / 2, seg.size.z / 2),
-        { type: 'wall', grappleable: true, label: 'Outer Wall Maria' }
-      );
     }
 
-    // Buttress pillars & Gatehouse Towers along the walls
+    const wallH = layout.walls[0]?.size.y ?? 32;
+    const halfSize = layout.halfSize;
+
+    // Visual Buttress pillars along the outer walls
     for (let i = -120; i <= 120; i += 40) {
       for (const side of [-1, 1]) {
         const pillarN = new THREE.Mesh(
@@ -240,7 +233,7 @@ export class CityBuilder {
     }
   }
 
-  private buildCentralPlaza(): void {
+  private buildWatchtowersVisuals(layout: CityLayoutData): void {
     const stoneMat = new THREE.MeshStandardMaterial({
       color: 0x7b808a,
       roughness: 0.75,
@@ -250,36 +243,32 @@ export class CityBuilder {
       roughness: 0.7,
     });
 
-    // Central Clock/Bell Watchtower in the Plaza (great central grapple landmark)
-    const towerH = 34;
-    const towerW = 7.5;
-    const towerCenter = new THREE.Vector3(0, towerH / 2, 0);
-    const towerMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(towerW, towerH, towerW),
-      stoneMat
-    );
-    towerMesh.position.copy(towerCenter);
-    towerMesh.castShadow = true;
-    towerMesh.receiveShadow = true;
-    this.cityGroup.add(towerMesh);
+    for (const tower of layout.towers) {
+      const towerMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(tower.width, tower.height, tower.width),
+        stoneMat
+      );
+      towerMesh.position.copy(tower.center);
+      towerMesh.castShadow = true;
+      towerMesh.receiveShadow = true;
+      this.cityGroup.add(towerMesh);
 
-    const spireMesh = new THREE.Mesh(
-      new THREE.ConeGeometry(towerW * 0.82, 11, 4),
-      roofMat
-    );
-    spireMesh.position.set(0, towerH + 5.5, 0);
-    spireMesh.rotation.y = Math.PI / 4;
-    spireMesh.castShadow = true;
-    this.cityGroup.add(spireMesh);
-
-    this.physics.addStaticBox(
-      towerCenter,
-      new THREE.Vector3(towerW / 2, towerH / 2, towerW / 2),
-      { type: 'tower', grappleable: true, label: 'Central Bell Tower' }
-    );
+      const spireMesh = new THREE.Mesh(
+        new THREE.ConeGeometry(tower.width * 0.82, tower.spireHeight, 4),
+        roofMat
+      );
+      spireMesh.position.set(
+        tower.center.x,
+        tower.height + tower.spireHeight * 0.5,
+        tower.center.z
+      );
+      spireMesh.rotation.y = Math.PI / 4;
+      spireMesh.castShadow = true;
+      this.cityGroup.add(spireMesh);
+    }
   }
 
-  private buildCityDistricts(halfSize: number): void {
+  private buildCityDistrictsVisuals(layout: CityLayoutData): void {
     const facadeColors = ['#d8cbb8', '#cbbba4', '#e0d5c3', '#bfa98e'];
     const facadeMats = facadeColors.map((hex) => {
       const tex = this.createFacadeTexture(hex);
@@ -302,110 +291,47 @@ export class CityBuilder {
       roughness: 0.85,
     });
 
-    // Deterministic seeded layout of city blocks across the 4 quadrants
-    // Leaves wide avenues along X=0 and Z=0 plus streets between blocks
-    const blockCoords = [-112, -82, -52, -26, 26, 52, 82, 112];
-    let bIndex = 0;
+    for (const b of layout.buildings) {
+      const mat = facadeMats[b.index % facadeMats.length];
+      const buildingGroup = new THREE.Group();
+      buildingGroup.position.set(b.bx, 0, b.bz);
 
-    for (const bx of blockCoords) {
-      for (const bz of blockCoords) {
-        // Leave open spaces near supply stations and spawn plazas
-        if (Math.abs(bx) === 26 && Math.abs(bz) === 26) {
-          this.patrolWaypoints.push(new THREE.Vector3(bx, 0, bz));
-          continue;
-        }
-        if (Math.abs(bx) === 112 && Math.abs(bz) === 112) {
-          this.titanSpawnPoints.push(new THREE.Vector3(bx, 0, bz));
-          continue;
-        }
+      // Main building body
+      const bodyGeo = new THREE.BoxGeometry(b.width, b.bodyHeight, b.depth);
+      const bodyMesh = new THREE.Mesh(bodyGeo, mat);
+      bodyMesh.position.y = b.bodyHeight / 2;
+      bodyMesh.castShadow = true;
+      bodyMesh.receiveShadow = true;
+      buildingGroup.add(bodyMesh);
 
-        bIndex++;
-        const seed = (bx * 37 + bz * 53 + bIndex * 19) & 0xffff;
-        const width = 12 + (seed % 7); // 12m - 18m
-        const depth = 12 + ((seed >> 3) % 7); // 12m - 18m
-        const height = 14 + ((seed >> 5) % 18); // 14m - 31m tall for high-speed vertical ODM
+      // Pitched gabled roof
+      const roofGeo = new THREE.ConeGeometry(
+        Math.max(b.width, b.depth) * 0.74,
+        b.roofHeight,
+        4
+      );
+      const roofMesh = new THREE.Mesh(
+        roofGeo,
+        b.index % 4 === 0 ? roofMatSlate : roofMatRed
+      );
+      roofMesh.position.y = b.bodyHeight + b.roofHeight / 2;
+      roofMesh.rotation.y = Math.PI / 4;
+      roofMesh.castShadow = true;
+      buildingGroup.add(roofMesh);
 
-        const mat = facadeMats[bIndex % facadeMats.length];
-        const buildingGroup = new THREE.Group();
-        buildingGroup.position.set(bx, 0, bz);
+      // Overhanging wooden balcony on upper floors
+      const balMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(b.width + 1.2, 0.8, b.depth + 1.2),
+        balconyMat
+      );
+      balMesh.position.y = b.bodyHeight * 0.65;
+      buildingGroup.add(balMesh);
 
-        // Main building body
-        const bodyGeo = new THREE.BoxGeometry(width, height, depth);
-        const bodyMesh = new THREE.Mesh(bodyGeo, mat);
-        bodyMesh.position.y = height / 2;
-        bodyMesh.castShadow = true;
-        bodyMesh.receiveShadow = true;
-        buildingGroup.add(bodyMesh);
-
-        // Pitched gabled roof
-        const roofH = 4.5 + (seed % 3);
-        const roofGeo = new THREE.ConeGeometry(
-          Math.max(width, depth) * 0.74,
-          roofH,
-          4
-        );
-        const roofMesh = new THREE.Mesh(
-          roofGeo,
-          bIndex % 4 === 0 ? roofMatSlate : roofMatRed
-        );
-        roofMesh.position.y = height + roofH / 2;
-        roofMesh.rotation.y = Math.PI / 4;
-        roofMesh.castShadow = true;
-        buildingGroup.add(roofMesh);
-
-        // Overhanging wooden balcony on upper floors
-        const balMesh = new THREE.Mesh(
-          new THREE.BoxGeometry(width + 1.2, 0.8, depth + 1.2),
-          balconyMat
-        );
-        balMesh.position.y = height * 0.65;
-        buildingGroup.add(balMesh);
-
-        this.cityGroup.add(buildingGroup);
-
-        // Register Physics Collider for building + roof so hooks can latch cleanly
-        const totalColliderH = height + roofH * 0.5;
-        this.physics.addStaticBox(
-          new THREE.Vector3(bx, totalColliderH / 2, bz),
-          new THREE.Vector3(width / 2, totalColliderH / 2, depth / 2),
-          {
-            type: 'building',
-            grappleable: true,
-            label: `District Building #${bIndex}`,
-          }
-        );
-
-        // Add street intersection waypoints near this block
-        if (bIndex % 3 === 0) {
-          this.patrolWaypoints.push(
-            new THREE.Vector3(bx + width * 0.5 + 6, 0, bz)
-          );
-        }
-      }
+      this.cityGroup.add(buildingGroup);
     }
-
-    // Add dedicated Titan spawn points along avenues and outer districts
-    const extraSpawns = [
-      new THREE.Vector3(0, 0, -115),
-      new THREE.Vector3(0, 0, 115),
-      new THREE.Vector3(-115, 0, 0),
-      new THREE.Vector3(115, 0, 0),
-      new THREE.Vector3(-68, 0, -68),
-      new THREE.Vector3(68, 0, -68),
-      new THREE.Vector3(-68, 0, 68),
-      new THREE.Vector3(68, 0, 68),
-    ];
-    this.titanSpawnPoints.push(...extraSpawns);
   }
 
-  private buildSupplyStations(): void {
-    const locations = [
-      new THREE.Vector3(16, 0, 16),
-      new THREE.Vector3(-65, 0, 0),
-      new THREE.Vector3(65, 0, 0),
-      new THREE.Vector3(0, 0, -65),
-    ];
-
+  private buildSupplyStationsVisuals(layout: CityLayoutData): void {
     const baseMat = new THREE.MeshStandardMaterial({
       color: 0x4b5563,
       roughness: 0.6,
@@ -422,11 +348,10 @@ export class CityBuilder {
       side: THREE.DoubleSide,
     });
 
-    locations.forEach((pos, idx) => {
+    layout.supplyStations.forEach((pos, idx) => {
       const group = new THREE.Group();
       group.position.copy(pos);
 
-      // Supply platform & gas tanks rack
       const platform = new THREE.Mesh(
         new THREE.CylinderGeometry(3.2, 3.6, 0.6, 8),
         baseMat
@@ -435,12 +360,14 @@ export class CityBuilder {
       platform.receiveShadow = true;
       group.add(platform);
 
-      const crate = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.2, 2.4), crateMat);
+      const crate = new THREE.Mesh(
+        new THREE.BoxGeometry(2.4, 2.2, 2.4),
+        crateMat
+      );
       crate.position.y = 1.7;
       crate.castShadow = true;
       group.add(crate);
 
-      // Glowing vertical supply beacon cylinder
       const beacon = new THREE.Mesh(
         new THREE.CylinderGeometry(1.4, 1.4, 22, 12, 1, true),
         beaconMat
@@ -450,16 +377,6 @@ export class CityBuilder {
 
       this.cityGroup.add(group);
 
-      this.physics.addStaticBox(
-        new THREE.Vector3(pos.x, 1.5, pos.z),
-        new THREE.Vector3(1.5, 1.5, 1.5),
-        {
-          type: 'resupply',
-          grappleable: true,
-          label: `Supply Depot #${idx + 1}`,
-        }
-      );
-
       this.supplyStations.push({
         id: `supply_${idx + 1}`,
         position: pos.clone(),
@@ -468,17 +385,10 @@ export class CityBuilder {
     });
   }
 
-  private buildInstancedFoliage(halfSize: number): void {
-    const treePositions: THREE.Vector3[] = [];
-    for (let i = -125; i <= 125; i += 25) {
-      if (Math.abs(i) < 18) continue;
-      treePositions.push(new THREE.Vector3(i, 0, -12));
-      treePositions.push(new THREE.Vector3(i, 0, 12));
-      treePositions.push(new THREE.Vector3(-12, 0, i));
-      treePositions.push(new THREE.Vector3(12, 0, i));
-    }
+  private buildInstancedFoliageVisuals(layout: CityLayoutData): void {
+    const count = layout.trees.length;
+    if (count === 0) return;
 
-    const count = treePositions.length;
     const trunkGeo = new THREE.CylinderGeometry(0.45, 0.65, 6, 7);
     const trunkMat = new THREE.MeshStandardMaterial({
       color: 0x4a3525,
@@ -496,22 +406,15 @@ export class CityBuilder {
     canopyInst.castShadow = true;
 
     const dummy = new THREE.Object3D();
-    treePositions.forEach((pos, idx) => {
-      dummy.position.set(pos.x, 3.0, pos.z);
+    layout.trees.forEach((tree, idx) => {
+      dummy.position.set(tree.pos.x, 3.0, tree.pos.z);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
       trunkInst.setMatrixAt(idx, dummy.matrix);
 
-      dummy.position.set(pos.x, 8.5, pos.z);
+      dummy.position.set(tree.pos.x, 8.5, tree.pos.z);
       dummy.updateMatrix();
       canopyInst.setMatrixAt(idx, dummy.matrix);
-
-      this.physics.addStaticCylinder(
-        new THREE.Vector3(pos.x, 5.5, pos.z),
-        5.5,
-        0.8,
-        { type: 'tree', grappleable: true, label: 'City Tree' }
-      );
     });
 
     trunkInst.instanceMatrix.needsUpdate = true;

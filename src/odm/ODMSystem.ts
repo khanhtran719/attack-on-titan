@@ -3,6 +3,12 @@ import { GAME_CONFIG } from '../config/GameConfig';
 import { TitanEntity } from '../enemies/TitanEntity';
 import { TitanZoneType } from '../enemies/TitanRigBuilder';
 import { PhysicsWorld } from '../physics/PhysicsWorld';
+import { NetHookState } from '../shared/Protocol';
+import {
+  findBestWorldGrapplePoint,
+  HookFireDebugInfo,
+  HookFireResultReason,
+} from '../shared/WorldGrappleSolver';
 import {
   RopeAnchorConstraintInput,
   solveODMRopeConstraints,
@@ -48,6 +54,10 @@ export class ODMSystem {
     attachedTitanId: null,
     attachedZone: null,
   };
+
+  public lastLeftDebug: HookFireDebugInfo | null = null;
+  public lastRightDebug: HookFireDebugInfo | null = null;
+  public readonly debugHistory: HookFireDebugInfo[] = [];
 
   private leftWireMesh: THREE.Mesh;
   private rightWireMesh: THREE.Mesh;
@@ -116,6 +126,85 @@ export class ODMSystem {
     return this.leftHook.active || this.rightHook.active;
   }
 
+  private recordHookDebug(
+    side: 'left' | 'right',
+    success: boolean,
+    reason: HookFireResultReason,
+    anchor: THREE.Vector3 | null,
+    distance: number,
+    surfaceLabel?: string
+  ): void {
+    const info: HookFireDebugInfo = {
+      side,
+      seq: 0,
+      timestampMs: Date.now(),
+      success,
+      reason,
+      anchor: anchor ? [anchor.x, anchor.y, anchor.z] : null,
+      distance,
+      surfaceLabel,
+    };
+    if (side === 'left') {
+      this.lastLeftDebug = info;
+    } else {
+      this.lastRightDebug = info;
+    }
+    this.debugHistory.push(info);
+    if (this.debugHistory.length > 32) {
+      this.debugHistory.shift();
+    }
+  }
+
+  /**
+   * Synchronizes local Left or Right hook state with an authoritative server snapshot
+   * once `snapshot.lastAckedSeq >= lastClientHookActionSeq`.
+   * - Restores hook if server is active and client is inactive.
+   * - Aligns anchorPos, attachedTitanId/zone, and restLength if both are active.
+   * - Releases hook if server rejected/detached it.
+   */
+  public syncHookFromServer(
+    side: 'left' | 'right',
+    netHook: NetHookState,
+    titans: TitanEntity[]
+  ): void {
+    const hook = side === 'left' ? this.leftHook : this.rightHook;
+
+    if (!netHook.active) {
+      if (hook.active) {
+        this.releaseHook(side);
+      }
+      return;
+    }
+
+    const wasActive = hook.active;
+    hook.active = true;
+    hook.attachedTitanId = netHook.attachedTitanId;
+    hook.attachedZone = netHook.attachedZone;
+    hook.isTaut = netHook.isTaut;
+
+    if (!wasActive) {
+      hook.deployProgress = 1.0;
+      hook.restLength = netHook.restLength;
+    } else if (Math.abs(hook.restLength - netHook.restLength) > 0.6) {
+      hook.restLength =
+        hook.restLength * 0.4 + netHook.restLength * 0.6;
+    }
+
+    if (hook.attachedTitanId && hook.attachedZone) {
+      const titan = titans.find((t) => t.id === hook.attachedTitanId);
+      if (titan && !titan.isDead()) {
+        hook.anchorPos.copy(titan.hurtboxes[hook.attachedZone].worldPosition);
+        return;
+      }
+    }
+
+    hook.anchorPos.set(
+      netHook.anchor[0],
+      netHook.anchor[1],
+      netHook.anchor[2]
+    );
+  }
+
   /**
    * Probes whether the camera reticle is currently pointing at a valid grapple surface or Titan.
    */
@@ -134,7 +223,7 @@ export class ODMSystem {
       const toZone = zonePos.clone().sub(cameraOrigin).normalize();
       if (
         dist <= GAME_CONFIG.odm.maxGrappleRange &&
-        toZone.dot(cameraForward) > 0.45
+        toZone.dot(cameraForward) > 0.35
       ) {
         return {
           canGrapple: true,
@@ -161,8 +250,9 @@ export class ODMSystem {
       };
     }
 
-    // 3. Check static world geometry via center ray or assist cone
-    const worldHit = this.findWorldGrapplePoint(
+    // 3. Check static world geometry via shared multi-stage world grapple solver
+    const worldHit = findBestWorldGrapplePoint(
+      this.physics,
       cameraOrigin,
       cameraForward,
       playerPos,
@@ -192,14 +282,14 @@ export class ODMSystem {
     side: 'left' | 'right',
     cameraOrigin: THREE.Vector3,
     cameraForward: THREE.Vector3,
-    cameraRight: THREE.Vector3,
+    _cameraRight: THREE.Vector3,
     playerPos: THREE.Vector3,
     titans: TitanEntity[],
     lockedTitan: TitanEntity | null,
     lockedZone: TitanZoneType
   ): boolean {
     const hook = side === 'left' ? this.leftHook : this.rightHook;
-    const sideSign = side === 'left' ? -1 : 1;
+    const sideSign: -1 | 1 = side === 'left' ? -1 : 1;
 
     // 1. Priority: Locked Titan zone if within range and forward cone
     if (lockedTitan && !lockedTitan.isDead()) {
@@ -216,6 +306,14 @@ export class ODMSystem {
         hook.deployProgress = 0.25;
         hook.attachedTitanId = lockedTitan.id;
         hook.attachedZone = lockedZone;
+        this.recordHookDebug(
+          side,
+          true,
+          'LOCKED_TITAN_LATCH',
+          zonePos,
+          dist,
+          `Titan ${lockedTitan.id} [${lockedZone}]`
+        );
         return true;
       }
     }
@@ -237,18 +335,22 @@ export class ODMSystem {
       hook.deployProgress = 0.25;
       hook.attachedTitanId = titanHit.titan.id;
       hook.attachedZone = titanHit.zone;
+      this.recordHookDebug(
+        side,
+        true,
+        'RAY_TITAN_LATCH',
+        titanHit.point,
+        titanHit.distance,
+        `Titan ${titanHit.titan.id} [${titanHit.zone}]`
+      );
       return true;
     }
 
-    // 3. Check world buildings/walls/towers with subtle left/right lateral bias for dual-hook street swinging
-    const biasedDir = cameraForward
-      .clone()
-      .addScaledVector(cameraRight, sideSign * 0.045)
-      .normalize();
-
-    const worldHit = this.findWorldGrapplePoint(
+    // 3. Check world buildings/walls/towers using the shared multi-stage world grapple solver
+    const worldHit = findBestWorldGrapplePoint(
+      this.physics,
       cameraOrigin,
-      biasedDir,
+      cameraForward,
       playerPos,
       sideSign
     );
@@ -262,9 +364,24 @@ export class ODMSystem {
       hook.deployProgress = 0.25;
       hook.attachedTitanId = null;
       hook.attachedZone = null;
+      this.recordHookDebug(
+        side,
+        true,
+        worldHit.reason,
+        worldHit.point,
+        worldHit.distance,
+        worldHit.surfaceLabel
+      );
       return true;
     }
 
+    this.recordHookDebug(
+      side,
+      false,
+      'REJECT_NO_SURFACE_IN_CONE',
+      null,
+      GAME_CONFIG.odm.maxGrappleRange
+    );
     return false;
   }
 
@@ -300,7 +417,6 @@ export class ODMSystem {
 
         const closestOnRay = origin.clone().addScaledVector(dir, proj);
         const perpDist = closestOnRay.distanceTo(hb.worldPosition);
-        // Generous grapple capture radius on moving Titan parts
         if (perpDist <= hb.radius * 2.4) {
           const score = perpDist * 3.0 + distFromPlayer * 0.1;
           if (score < bestScore) {
@@ -317,66 +433,6 @@ export class ODMSystem {
     }
 
     return best;
-  }
-
-  private findWorldGrapplePoint(
-    origin: THREE.Vector3,
-    forward: THREE.Vector3,
-    playerPos: THREE.Vector3,
-    sideSign: number
-  ): { point: THREE.Vector3; distance: number } | null {
-    const maxRange = GAME_CONFIG.odm.maxGrappleRange;
-
-    // 1. Direct raycast
-    const direct = this.physics.castRay(origin, forward, maxRange + 8, true);
-    if (
-      direct &&
-      direct.point.distanceTo(playerPos) <= maxRange &&
-      direct.point.y >= 1.5
-    ) {
-      return {
-        point: direct.point,
-        distance: direct.point.distanceTo(playerPos),
-      };
-    }
-
-    // 2. Multi-ray fan within aimAssistConeAngleRad to catch nearby rooftops & building facades
-    const up = new THREE.Vector3(0, 1, 0);
-    const right = new THREE.Vector3().crossVectors(forward, up).normalize();
-    const orthoUp = new THREE.Vector3().crossVectors(right, forward).normalize();
-
-    const coneAngle = GAME_CONFIG.odm.aimAssistConeAngleRad;
-    const offsets: Array<[number, number]> = [
-      [sideSign * 0.5, 0.3],
-      [sideSign * 0.9, 0.0],
-      [sideSign * 1.2, 0.4],
-      [0, 0.6],
-      [0, -0.5],
-      [-sideSign * 0.5, 0.2],
-      [sideSign * 1.5, -0.2],
-    ];
-
-    for (const [rx, ry] of offsets) {
-      const rayDir = forward
-        .clone()
-        .addScaledVector(right, rx * coneAngle)
-        .addScaledVector(orthoUp, ry * coneAngle)
-        .normalize();
-
-      const hit = this.physics.castRay(origin, rayDir, maxRange + 8, true);
-      if (
-        hit &&
-        hit.point.distanceTo(playerPos) <= maxRange &&
-        hit.point.y >= 2.0
-      ) {
-        return {
-          point: hit.point,
-          distance: hit.point.distanceTo(playerPos),
-        };
-      }
-    }
-
-    return null;
   }
 
   /**

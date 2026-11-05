@@ -20,6 +20,7 @@ import {
   NetRoomState,
   S2C_CombatEvent,
 } from '../shared/Protocol';
+import { stepReplayedInputFrame } from '../shared/WorldGrappleSolver';
 import { UIManager } from '../ui/UIManager';
 import { CityBuilder } from '../world/CityBuilder';
 import { SaveManager } from './SaveManager';
@@ -61,6 +62,17 @@ export class GameEngine {
   private coopOverlayOpen = false;
   private lastAttackIntentSentAt = 0;
   private wasLocalDownedOrDead = false;
+  private lastLeftActionSeq = 0;
+  private lastRightActionSeq = 0;
+  private prevLeftHookActive = false;
+  private prevRightHookActive = false;
+
+  // Buffered edge-triggered inputs across render frames when rawDt < fixedDt
+  private pendingJumpPressed = false;
+  private pendingLeftGrappleJustPressed = false;
+  private pendingRightGrappleJustPressed = false;
+  private pendingDodgeJustPressed = false;
+  private pendingResupplyJustPressed = false;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -273,12 +285,16 @@ export class GameEngine {
     this.player.reset(spawnPos, spawnYaw);
     this.physics.setPlayerPosition(spawnPos);
 
-    this.actionCam.yaw = 0;
-    this.actionCam.pitch = 0.14;
+    this.actionCam.reset(spawnPos, 0, 0.14);
     this.combat.lockedTitan = null;
     this.combat.comboCount = 0;
     this.coopOverlayOpen = false;
     this.wasLocalDownedOrDead = false;
+    this.lastLeftActionSeq = 0;
+    this.lastRightActionSeq = 0;
+    this.prevLeftHookActive = false;
+    this.prevRightHookActive = false;
+    this.clearPendingEdgeInputs();
 
     this.missions.startMission(
       'coop',
@@ -342,35 +358,128 @@ export class GameEngine {
           this.ui.showCombatBanner('REVIVED BY SQUAD — BACK IN ACTION!');
         }
 
+        // 1. Sequence-aware Left & Right Hook synchronization:
+        // Never allow an older snapshot (lastAckedSeq < lastActionSeq) to cancel a newly predicted hook.
+        if (localNet.lastAckedSeq >= this.lastLeftActionSeq) {
+          this.odm.syncHookFromServer(
+            'left',
+            localNet.leftHook,
+            this.missions.titans
+          );
+          this.prevLeftHookActive = this.odm.leftHook.active;
+        }
+        if (localNet.lastAckedSeq >= this.lastRightActionSeq) {
+          this.odm.syncHookFromServer(
+            'right',
+            localNet.rightHook,
+            this.missions.titans
+          );
+          this.prevRightHookActive = this.odm.rightHook.active;
+        }
+
+        // 2. Client-Side Prediction & Server Reconciliation with Unacknowledged Input Replay
         const recon = this.netClient.reconcilePrediction(
           localNet.lastAckedSeq,
           localNet.position,
           localNet.velocity
         );
         if (recon.needsCorrection) {
-          const distErr = this.player.position.distanceTo(recon.authPosition);
-          if (distErr > 4.0) {
-            this.player.position.copy(recon.authPosition);
-            this.player.velocity.copy(recon.authVelocity);
-          } else {
-            this.player.position.lerp(recon.authPosition, 0.35);
-            this.player.velocity.lerp(recon.authVelocity, 0.35);
-          }
-          this.physics.setPlayerPosition(this.player.position);
-        }
+          const replayedPos = recon.authPosition.clone();
+          const replayedVel = recon.authVelocity.clone();
+          let replayedGrounded = localNet.grounded;
 
-        // Sync authoritative hook release if server rejected/detached a hook
-        if (!localNet.leftHook.active && this.odm.leftHook.active) {
-          this.odm.releaseHook('left');
-        }
-        if (!localNet.rightHook.active && this.odm.rightHook.active) {
-          this.odm.releaseHook('right');
+          const replayLeft = {
+            active:
+              localNet.lastAckedSeq >= this.lastLeftActionSeq
+                ? localNet.leftHook.active
+                : this.odm.leftHook.active,
+            anchorPos:
+              localNet.lastAckedSeq >= this.lastLeftActionSeq
+                ? new THREE.Vector3(...localNet.leftHook.anchor)
+                : this.odm.leftHook.anchorPos.clone(),
+            restLength:
+              localNet.lastAckedSeq >= this.lastLeftActionSeq
+                ? localNet.leftHook.restLength
+                : this.odm.leftHook.restLength,
+          };
+          const replayRight = {
+            active:
+              localNet.lastAckedSeq >= this.lastRightActionSeq
+                ? localNet.rightHook.active
+                : this.odm.rightHook.active,
+            anchorPos:
+              localNet.lastAckedSeq >= this.lastRightActionSeq
+                ? new THREE.Vector3(...localNet.rightHook.anchor)
+                : this.odm.rightHook.anchorPos.clone(),
+            restLength:
+              localNet.lastAckedSeq >= this.lastRightActionSeq
+                ? localNet.rightHook.restLength
+                : this.odm.rightHook.restLength,
+          };
+
+          for (const unacked of recon.unackedFrames) {
+            if (unacked.leftGrappleAction === 'release') {
+              replayLeft.active = false;
+            } else if (
+              unacked.leftGrappleAction === 'fire' &&
+              unacked.leftGrappleTarget
+            ) {
+              replayLeft.active = true;
+              replayLeft.anchorPos.set(...unacked.leftGrappleTarget);
+              replayLeft.restLength = Math.max(
+                GAME_CONFIG.odm.minRopeLength,
+                replayedPos.distanceTo(replayLeft.anchorPos)
+              );
+            }
+
+            if (unacked.rightGrappleAction === 'release') {
+              replayRight.active = false;
+            } else if (
+              unacked.rightGrappleAction === 'fire' &&
+              unacked.rightGrappleTarget
+            ) {
+              replayRight.active = true;
+              replayRight.anchorPos.set(...unacked.rightGrappleTarget);
+              replayRight.restLength = Math.max(
+                GAME_CONFIG.odm.minRopeLength,
+                replayedPos.distanceTo(replayRight.anchorPos)
+              );
+            }
+
+            const stepOut = stepReplayedInputFrame(
+              this.physics,
+              replayedPos,
+              replayedVel,
+              replayedGrounded,
+              replayLeft,
+              replayRight,
+              unacked
+            );
+            replayedGrounded = stepOut.grounded;
+          }
+
+          const distErr = this.player.position.distanceTo(replayedPos);
+          if (distErr > 0.45) {
+            if (distErr > 6.0) {
+              this.player.position.copy(replayedPos);
+              this.player.velocity.copy(replayedVel);
+            } else {
+              this.player.position.lerp(replayedPos, 0.35);
+              this.player.velocity.lerp(replayedVel, 0.25);
+            }
+            this.physics.setPlayerPosition(this.player.position);
+          }
         }
       }
     }
 
     // Push snapshot to RemotePlayerManager for interpolation of teammates
     this.remotePlayers.syncFromRoomSnapshot(snapshot.players, myId);
+
+    // Ensure authoritative Co-op Titans & wave status are immediately synced on snapshot arrival
+    if (this.missions.mode === 'coop') {
+      this.missions.syncCoopFromServer(snapshot, 0.016, this.player.position);
+    }
 
     // Sync any newly added team pings into quick chat bubble display
     if (snapshot.pings.length > 0) {
@@ -459,11 +568,11 @@ export class GameEngine {
     this.player.reset(spawnPos, Math.PI);
     this.physics.setPlayerPosition(spawnPos);
 
-    this.actionCam.yaw = 0;
-    this.actionCam.pitch = 0.14;
+    this.actionCam.reset(spawnPos, 0, 0.14);
     this.combat.lockedTitan = null;
     this.combat.comboCount = 0;
     this.coopOverlayOpen = false;
+    this.clearPendingEdgeInputs();
 
     this.missions.startMission(
       mode,
@@ -474,6 +583,14 @@ export class GameEngine {
     this.state = 'playing';
     this.input.setEnabled(true);
     this.input.requestPointerLock();
+  }
+
+  private clearPendingEdgeInputs(): void {
+    this.pendingJumpPressed = false;
+    this.pendingLeftGrappleJustPressed = false;
+    this.pendingRightGrappleJustPressed = false;
+    this.pendingDodgeJustPressed = false;
+    this.pendingResupplyJustPressed = false;
   }
 
   public restartMission(): void {
@@ -688,6 +805,34 @@ export class GameEngine {
       this.combat.hitStopTimer = Math.max(0, this.combat.hitStopTimer - rawDt);
     }
 
+    // Buffer edge-triggered physics inputs across render frames so they are NEVER
+    // swallowed when physicsAccumulator < fixedDt (e.g. high-refresh monitors).
+    if (inputState.jumpPressed) this.pendingJumpPressed = true;
+    if (inputState.leftGrappleJustPressed)
+      this.pendingLeftGrappleJustPressed = true;
+    if (inputState.rightGrappleJustPressed)
+      this.pendingRightGrappleJustPressed = true;
+    if (inputState.dodgeJustPressed) this.pendingDodgeJustPressed = true;
+    if (inputState.resupplyJustPressed) this.pendingResupplyJustPressed = true;
+
+    // Update Camera aim angles BEFORE fixed-timestep physics so ODM raycasts
+    // always use the exact current frame's aim direction and origin.
+    const lockedZoneWorld =
+      this.combat.lockedTitan && !this.combat.lockedTitan.isDead()
+        ? this.combat.lockedTitan.hurtboxes[this.combat.lockedZone].worldPosition
+        : null;
+
+    this.actionCam.update(
+      rawDt,
+      this.coopOverlayOpen ? 0 : inputState.mouseDeltaX,
+      this.coopOverlayOpen ? 0 : inputState.mouseDeltaY,
+      this.player.position,
+      this.player.velocity,
+      this.player.isBoosting,
+      lockedZoneWorld,
+      this.physics
+    );
+
     // =========================================================================
     // Fixed-Timestep Physics & AI Simulation Loop (60 Hz)
     // =========================================================================
@@ -695,7 +840,14 @@ export class GameEngine {
     const fixedDt = GAME_CONFIG.physics.fixedTimestep;
     let steps = 0;
 
-    let subInput = inputState;
+    let subInput = {
+      ...inputState,
+      jumpPressed: this.pendingJumpPressed,
+      leftGrappleJustPressed: this.pendingLeftGrappleJustPressed,
+      rightGrappleJustPressed: this.pendingRightGrappleJustPressed,
+      dodgeJustPressed: this.pendingDodgeJustPressed,
+      resupplyJustPressed: this.pendingResupplyJustPressed,
+    };
 
     while (
       this.physicsAccumulator >= fixedDt &&
@@ -704,6 +856,7 @@ export class GameEngine {
       this.stepSimulation(fixedDt, subInput);
       this.physicsAccumulator -= fixedDt;
       steps++;
+      this.clearPendingEdgeInputs();
       subInput = {
         ...subInput,
         jumpPressed: false,
@@ -721,6 +874,20 @@ export class GameEngine {
         mouseDeltaX: 0,
         mouseDeltaY: 0,
       };
+    }
+
+    if (steps > 0) {
+      // Refresh camera position to match updated player position after physics steps
+      this.actionCam.update(
+        0,
+        0,
+        0,
+        this.player.position,
+        this.player.velocity,
+        this.player.isBoosting,
+        lockedZoneWorld,
+        this.physics
+      );
     }
 
     // =========================================================================
@@ -844,23 +1011,6 @@ export class GameEngine {
         this.trySendCoopAttackIntent(nowMs);
       }
     }
-
-    // Update Camera
-    const lockedZoneWorld =
-      this.combat.lockedTitan && !this.combat.lockedTitan.isDead()
-        ? this.combat.lockedTitan.hurtboxes[this.combat.lockedZone].worldPosition
-        : null;
-
-    this.actionCam.update(
-      rawDt,
-      this.coopOverlayOpen ? 0 : inputState.mouseDeltaX,
-      this.coopOverlayOpen ? 0 : inputState.mouseDeltaY,
-      this.player.position,
-      this.player.velocity,
-      this.player.isBoosting,
-      lockedZoneWorld,
-      this.physics
-    );
 
     this.vfx.update(rawDt);
 
@@ -1019,27 +1169,46 @@ export class GameEngine {
         const camRight = this.actionCam.getRightVector();
         const camOrigin = this.actionCam.camera.position;
 
+        const leftJustActivated =
+          this.odm.leftHook.active && !this.prevLeftHookActive;
+        const leftJustReleased =
+          !this.odm.leftHook.active && this.prevLeftHookActive;
+        const rightJustActivated =
+          this.odm.rightHook.active && !this.prevRightHookActive;
+        const rightJustReleased =
+          !this.odm.rightHook.active && this.prevRightHookActive;
+
         const leftAction: C2S_InputFrame['leftGrappleAction'] =
           this.coopOverlayOpen
             ? 'none'
-            : inputState.leftGrappleJustPressed
+            : inputState.leftGrappleJustPressed || leftJustActivated
               ? 'fire'
               : inputState.leftGrappleHeld
                 ? 'hold'
-                : this.odm.leftHook.active
+                : leftJustReleased
                   ? 'release'
                   : 'none';
 
         const rightAction: C2S_InputFrame['rightGrappleAction'] =
           this.coopOverlayOpen
             ? 'none'
-            : inputState.rightGrappleJustPressed
+            : inputState.rightGrappleJustPressed || rightJustActivated
               ? 'fire'
               : inputState.rightGrappleHeld
                 ? 'hold'
-                : this.odm.rightHook.active
+                : rightJustReleased
                   ? 'release'
                   : 'none';
+
+        if (leftAction === 'fire' || leftAction === 'release') {
+          this.lastLeftActionSeq = seq;
+        }
+        if (rightAction === 'fire' || rightAction === 'release') {
+          this.lastRightActionSeq = seq;
+        }
+
+        this.prevLeftHookActive = this.odm.leftHook.active;
+        this.prevRightHookActive = this.odm.rightHook.active;
 
         const frame: C2S_InputFrame = {
           seq,
@@ -1060,6 +1229,22 @@ export class GameEngine {
           camRight: [camRight.x, camRight.y, camRight.z],
           leftGrappleAction: leftAction,
           rightGrappleAction: rightAction,
+          leftGrappleTarget:
+            this.odm.leftHook.active && !this.odm.leftHook.attachedTitanId
+              ? [
+                  this.odm.leftHook.anchorPos.x,
+                  this.odm.leftHook.anchorPos.y,
+                  this.odm.leftHook.anchorPos.z,
+                ]
+              : null,
+          rightGrappleTarget:
+            this.odm.rightHook.active && !this.odm.rightHook.attachedTitanId
+              ? [
+                  this.odm.rightHook.anchorPos.x,
+                  this.odm.rightHook.anchorPos.y,
+                  this.odm.rightHook.anchorPos.z,
+                ]
+              : null,
           lockedTitanId: this.combat.lockedTitan?.id || null,
           lockedZone: this.combat.lockedZone,
         };
