@@ -143,6 +143,17 @@ export class RemotePlayerManager {
       entity.leftAnchorMesh,
       entity.rightAnchorMesh
     );
+    entity.rig.rootGroup.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (mesh.isMesh) {
+        mesh.geometry?.dispose();
+        if (Array.isArray(mesh.material)) {
+          mesh.material.forEach((m) => m.dispose());
+        } else if (mesh.material) {
+          mesh.material.dispose();
+        }
+      }
+    });
   }
 
   public clearAll(): void {

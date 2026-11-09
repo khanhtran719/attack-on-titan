@@ -37,8 +37,20 @@ export class NetworkClient {
   public connectionState: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' =
     'disconnected';
   public rttMs = 12;
+  public jitterMsEstimate = 0;
+  public reconciliationCorrectionCount = 0;
+  public maxPositionError = 0;
   public latestState: NetRoomState | null = null;
   public lastReconciliationTimeMs = 0;
+
+  // Bounded reconnection settings
+  public maxReconnectAttempts = 4;
+  public reconnectBaseDelayMs = 250;
+  public reconnectTimeoutMs = 8000;
+  private lastRoomId = '';
+  private lastNickname = 'Scout';
+  private isAutoReconnecting = false;
+  private reconnectCancelToken = 0;
 
   // Simulated network conditions for testing lag 50/100/200ms, jitter & packet loss
   public netConditions: NetworkConditions = {
@@ -158,7 +170,11 @@ export class NetworkClient {
     }
 
     const posError = ackedEntry.predictedPos.distanceTo(authPos);
+    if (posError > this.maxPositionError) {
+      this.maxPositionError = posError;
+    }
     if (posError > 0.45) {
+      this.reconciliationCorrectionCount++;
       return {
         needsCorrection: true,
         authPosition: authPos,
@@ -191,6 +207,8 @@ export class NetworkClient {
     roomName: string;
     isPublic: boolean;
   }): Promise<void> {
+    this.cancelAutoReconnect();
+    this.lastNickname = options.nickname;
     this.setConnectionState('connecting');
     try {
       const room = await this.client.create('coop_hunter', {
@@ -199,6 +217,7 @@ export class NetworkClient {
         isPublic: options.isPublic,
         sessionToken: this.sessionToken || undefined,
       });
+      this.lastRoomId = room.roomId;
       await this.bindRoom(room);
     } catch (err: any) {
       this.setConnectionState('disconnected', err?.message || 'Failed to create room');
@@ -214,6 +233,8 @@ export class NetworkClient {
     if (!cleanCode) {
       throw new Error('Please enter a valid 6-character Room Code.');
     }
+    this.cancelAutoReconnect();
+    this.lastNickname = nickname;
     this.setConnectionState('connecting');
     try {
       const res = await fetch(`${this.serverHttpUrl}/api/resolve/${cleanCode}`);
@@ -225,6 +246,7 @@ export class NetworkClient {
         nickname,
         sessionToken: this.sessionToken || undefined,
       });
+      this.lastRoomId = room.roomId;
       await this.bindRoom(room);
     } catch (err: any) {
       this.setConnectionState('disconnected', err?.message || 'Failed to join room');
@@ -233,12 +255,15 @@ export class NetworkClient {
   }
 
   public async joinRoomById(roomId: string, nickname: string): Promise<void> {
+    this.cancelAutoReconnect();
+    this.lastNickname = nickname;
     this.setConnectionState('connecting');
     try {
       const room = await this.client.joinById(roomId, {
         nickname,
         sessionToken: this.sessionToken || undefined,
       });
+      this.lastRoomId = room.roomId;
       await this.bindRoom(room);
     } catch (err: any) {
       this.setConnectionState('disconnected', err?.message || 'Failed to join room');
@@ -250,19 +275,92 @@ export class NetworkClient {
     roomId: string,
     nickname: string
   ): Promise<boolean> {
-    if (!this.sessionToken) return false;
+    if (!this.sessionToken || !roomId) {
+      this.setConnectionState('disconnected', 'Missing session token');
+      return false;
+    }
     this.setConnectionState('reconnecting');
     try {
       const room = await this.client.joinById(roomId, {
         nickname,
         sessionToken: this.sessionToken,
       });
+      this.lastRoomId = room.roomId;
       await this.bindRoom(room);
       return true;
     } catch {
       this.setConnectionState('disconnected', 'Reconnection expired');
       return false;
     }
+  }
+
+  /**
+   * Bounded exponential-backoff reconnection loop with wall-clock timeout.
+   * Ensures the client never stays stuck in 'reconnecting' state indefinitely.
+   */
+  public async reconnectWithBackoff(
+    roomId = this.lastRoomId,
+    nickname = this.lastNickname
+  ): Promise<boolean> {
+    if (!this.sessionToken || !roomId) {
+      this.setConnectionState('disconnected', 'No active session to reconnect');
+      return false;
+    }
+    if (this.isAutoReconnecting) return false;
+    this.isAutoReconnecting = true;
+    const token = ++this.reconnectCancelToken;
+    const startMs = Date.now();
+    this.setConnectionState('reconnecting', 'Attempting to restore connection...');
+
+    for (let attempt = 0; attempt < this.maxReconnectAttempts; attempt++) {
+      if (this.reconnectCancelToken !== token) {
+        this.isAutoReconnecting = false;
+        return false;
+      }
+      const elapsed = Date.now() - startMs;
+      if (elapsed >= this.reconnectTimeoutMs) {
+        break;
+      }
+
+      const delay = Math.min(
+        this.reconnectTimeoutMs - elapsed,
+        this.reconnectBaseDelayMs * Math.pow(2, attempt)
+      );
+      if (delay > 0) {
+        await new Promise((r) => setTimeout(r, delay));
+      }
+      if (this.reconnectCancelToken !== token) {
+        this.isAutoReconnecting = false;
+        return false;
+      }
+
+      try {
+        const room = await this.client.joinById(roomId, {
+          nickname,
+          sessionToken: this.sessionToken,
+        });
+        this.lastRoomId = room.roomId;
+        this.isAutoReconnecting = false;
+        await this.bindRoom(room);
+        return true;
+      } catch {
+        // Continue to next backoff attempt
+      }
+    }
+
+    if (this.reconnectCancelToken === token) {
+      this.isAutoReconnecting = false;
+      this.setConnectionState(
+        'disconnected',
+        'Reconnection timed out after maximum retries'
+      );
+    }
+    return false;
+  }
+
+  public cancelAutoReconnect(): void {
+    this.reconnectCancelToken++;
+    this.isAutoReconnecting = false;
   }
 
   private bindRoom(room: Room): Promise<void> {
@@ -314,9 +412,12 @@ export class NetworkClient {
 
     room.onMessage('pong_rtt', (msg: S2C_PongRTT) => {
       const sample = Math.max(1, Date.now() - msg.clientSendMs);
-      this.rttMs = Math.round(
-        this.rttMs * 0.7 + (sample + this.netConditions.latencyMs) * 0.3
+      const effectiveSample = sample + this.netConditions.latencyMs;
+      this.jitterMsEstimate = Math.round(
+        this.jitterMsEstimate * 0.7 +
+          Math.abs(effectiveSample - this.rttMs) * 0.3
       );
+      this.rttMs = Math.round(this.rttMs * 0.7 + effectiveSample * 0.3);
     });
 
     room.onMessage('room_error', (err: S2C_RoomError) => {
@@ -328,10 +429,10 @@ export class NetworkClient {
         clearInterval(this.pingTimer);
         this.pingTimer = null;
       }
-      // Code 1000 is normal consented leave; unexpected drop triggers reconnecting notice
+      // Code 1000 is normal consented leave; unexpected drop triggers bounded backoff reconnect
       if (code !== 1000 && this.connectionState === 'connected') {
-        this.setConnectionState('reconnecting', `Connection interrupted (${code})`);
-      } else {
+        void this.reconnectWithBackoff(this.lastRoomId, this.lastNickname);
+      } else if (!this.isAutoReconnecting) {
         this.setConnectionState('disconnected');
       }
     });
@@ -391,6 +492,7 @@ export class NetworkClient {
   }
 
   public async leaveRoom(consented = true): Promise<void> {
+    this.cancelAutoReconnect();
     if (this.pingTimer) {
       clearInterval(this.pingTimer);
       this.pingTimer = null;

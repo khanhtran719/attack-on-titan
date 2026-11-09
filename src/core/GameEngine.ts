@@ -97,6 +97,7 @@ export class GameEngine {
     const settings = this.saveMgr.getSettings();
     this.rendererMgr.applyQualityPreset(settings.graphicsQuality);
     this.audio.setVolume(settings.masterVolume);
+    this.input.setTacticalOverlayKeyMode(settings.tacticalOverlayKey || 'KeyH');
 
     this.cityBuilder = new CityBuilder(this.rendererMgr.scene, this.physics);
     this.cityBuilder.buildWorld(false);
@@ -571,6 +572,7 @@ export class GameEngine {
     this.actionCam.targetDistance = updated.cameraDistance;
     this.audio.setVolume(updated.masterVolume);
     this.rendererMgr.applyQualityPreset(updated.graphicsQuality);
+    this.input.setTacticalOverlayKeyMode(updated.tacticalOverlayKey || 'KeyH');
   }
 
   public startGame(mode: GameMode): void {
@@ -1189,6 +1191,7 @@ export class GameEngine {
       pingMs: isCoop ? this.netClient.rttMs : 0,
       reconnecting:
         isCoop && this.netClient.connectionState === 'reconnecting',
+      tacticalOverlayHeld: inputState.tacticalOverlayHeld,
     });
 
     this.rendererMgr.renderer.render(

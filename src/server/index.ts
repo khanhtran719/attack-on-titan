@@ -49,6 +49,7 @@ function handleCustomApiRoutes(
 
   const isCustomRoute =
     url.pathname === '/healthz' ||
+    url.pathname === '/api/metrics' ||
     url.pathname === '/api/rooms' ||
     url.pathname.startsWith('/api/resolve/');
 
@@ -70,6 +71,36 @@ function handleCustomApiRoutes(
   if (url.pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK');
+    return true;
+  }
+
+  if (url.pathname === '/api/metrics' && req.method === 'GET') {
+    const roomsMetrics = [];
+    let totalPlayers = 0;
+    let totalTitans = 0;
+    for (const entry of activeRoomsByCode.values()) {
+      const m = entry.roomRef.getRoomMetrics();
+      totalPlayers += m.playerCount;
+      totalTitans += m.titanCount;
+      roomsMetrics.push(m);
+    }
+    const mem = process.memoryUsage();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        ok: true,
+        uptimeSeconds: Math.round(process.uptime()),
+        activeRooms: roomsMetrics.length,
+        totalPlayers,
+        totalTitans,
+        memoryMb: {
+          rss: Math.round((mem.rss / 1024 / 1024) * 100) / 100,
+          heapUsed: Math.round((mem.heapUsed / 1024 / 1024) * 100) / 100,
+          heapTotal: Math.round((mem.heapTotal / 1024 / 1024) * 100) / 100,
+        },
+        rooms: roomsMetrics,
+      })
+    );
     return true;
   }
 

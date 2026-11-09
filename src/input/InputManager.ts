@@ -1,3 +1,5 @@
+import { TacticalOverlayKeyMode } from '../config/GameConfig';
+
 export interface InputState {
   moveForward: number; // -1 to +1 (W/S)
   moveRight: number;   // -1 to +1 (D/A)
@@ -18,6 +20,7 @@ export interface InputState {
   interactHeld: boolean;
   pingJustPressed: boolean;
   quickChatKey: string | null;
+  tacticalOverlayHeld?: boolean;
   pauseJustPressed: boolean;
   mouseDeltaX: number;
   mouseDeltaY: number;
@@ -31,15 +34,25 @@ export class InputManager {
   private leftMouseJustPressed = false;
   private rightMouseDown = false;
   private rightMouseJustPressed = false;
+  private middleMouseJustPressed = false;
   private mouseDeltaX = 0;
   private mouseDeltaY = 0;
   private wheelDelta = 0;
   private canvas: HTMLCanvasElement;
   private enabled = false;
+  private tacticalOverlayKeyMode: TacticalOverlayKeyMode = 'KeyH';
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.bindEvents();
+  }
+
+  public setTacticalOverlayKeyMode(mode: TacticalOverlayKeyMode): void {
+    this.tacticalOverlayKeyMode = mode;
+  }
+
+  public getTacticalOverlayKeyMode(): TacticalOverlayKeyMode {
+    return this.tacticalOverlayKeyMode;
   }
 
   private bindEvents(): void {
@@ -78,7 +91,7 @@ export class InputManager {
         this.rightMouseDown = true;
       } else if (e.button === 1) {
         e.preventDefault();
-        this.keysJustPressed.add('Tab');
+        this.middleMouseJustPressed = true;
       }
     });
 
@@ -140,6 +153,7 @@ export class InputManager {
       (this.keysDown.has('KeyA') || this.keysDown.has('ArrowLeft') ? 1 : 0);
 
     const cycleKeyDelta = this.keysJustPressed.has('KeyC') ? 1 : 0;
+    const useTabForOverlay = this.tacticalOverlayKeyMode === 'Tab';
 
     const state: InputState = {
       moveForward: forward,
@@ -157,7 +171,9 @@ export class InputManager {
       attackJustPressed: this.keysJustPressed.has('KeyF'),
       thunderSpearJustPressed: this.keysJustPressed.has('KeyV'),
       dodgeJustPressed: this.keysJustPressed.has('KeyQ'),
-      lockTargetJustPressed: this.keysJustPressed.has('Tab'),
+      lockTargetJustPressed: useTabForOverlay
+        ? this.middleMouseJustPressed || this.keysJustPressed.has('KeyT')
+        : this.keysJustPressed.has('Tab') || this.middleMouseJustPressed,
       cycleZoneDelta: this.wheelDelta + cycleKeyDelta,
       resupplyJustPressed: this.keysJustPressed.has('KeyR'),
       interactJustPressed: this.keysJustPressed.has('KeyE'),
@@ -172,6 +188,10 @@ export class InputManager {
             : this.keysJustPressed.has('Digit4')
               ? '4'
               : null,
+      tacticalOverlayHeld:
+        this.keysDown.has('KeyH') ||
+        this.keysDown.has('Backquote') ||
+        (useTabForOverlay && this.keysDown.has('Tab')),
       pauseJustPressed:
         this.keysJustPressed.has('Escape') || this.keysJustPressed.has('KeyP'),
       mouseDeltaX: this.mouseDeltaX,
@@ -183,6 +203,7 @@ export class InputManager {
     this.keysJustPressed.clear();
     this.leftMouseJustPressed = false;
     this.rightMouseJustPressed = false;
+    this.middleMouseJustPressed = false;
     this.mouseDeltaX = 0;
     this.mouseDeltaY = 0;
     this.wheelDelta = 0;

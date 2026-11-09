@@ -16,16 +16,31 @@ export interface RaycastHitResult {
   metadata: ColliderMetadata;
 }
 
+export interface PlayerPhysicsActor {
+  id: string;
+  body: RAPIER.RigidBody;
+  collider: RAPIER.Collider;
+  controller: RAPIER.KinematicCharacterController;
+}
+
 export class PhysicsWorld {
   public world!: RAPIER.World;
-  private characterController!: RAPIER.KinematicCharacterController;
-  private playerBody!: RAPIER.RigidBody;
-  private playerCollider!: RAPIER.Collider;
+  /**
+   * Co-op Player-to-Player Collision Policy:
+   * Default `false` (pass-through between squadmates) so high-speed aerial ODM swings
+   * and close-range revives never snag or body-block teammates in narrow street corridors.
+   * Can be toggled via `setPlayerToPlayerCollision(true)` for solid body-blocking tests.
+   */
+  public playerToPlayerCollision = false;
+
+  private playerActors: Map<string, PlayerPhysicsActor> = new Map();
+  private playerColliderHandles: Set<number> = new Set();
   private colliderMeta: Map<number, ColliderMetadata> = new Map();
   private staticBoxes: Array<{
     box: THREE.Box3;
     metadata: ColliderMetadata;
   }> = [];
+  private disposed = false;
 
   public static async create(): Promise<PhysicsWorld> {
     const pw = new PhysicsWorld();
@@ -33,53 +48,154 @@ export class PhysicsWorld {
     return pw;
   }
 
-  public async init(): Promise<void> {
+  public async init(createDefaultLocalActor = true): Promise<void> {
     await RAPIER.init();
-    this.world = new RAPIER.World({ x: 0, y: GAME_CONFIG.physics.gravity, z: 0 });
+    this.disposed = false;
+    this.world = new RAPIER.World({
+      x: 0,
+      y: GAME_CONFIG.physics.gravity,
+      z: 0,
+    });
+    if (createDefaultLocalActor) {
+      // Create default 'local' actor for single-player and client prediction
+      this.ensurePlayerActor('local', new THREE.Vector3(0, 0.2, 0));
+    }
+  }
 
-    // Create KinematicCharacterController for smooth wall sliding and step climbing
-    this.characterController = this.world.createCharacterController(0.06);
-    this.characterController.enableAutostep(0.45, 0.25, true);
-    this.characterController.enableSnapToGround(0.35);
-    this.characterController.setMaxSlopeClimbAngle((52 * Math.PI) / 180);
-    this.characterController.setMinSlopeSlideAngle((58 * Math.PI) / 180);
+  public ensurePlayerActor(
+    playerId = 'local',
+    footPos?: THREE.Vector3
+  ): PlayerPhysicsActor {
+    const existing = this.playerActors.get(playerId);
+    if (existing) {
+      if (footPos) {
+        this.setPlayerPosition(footPos, playerId);
+      }
+      return existing;
+    }
 
-    // Create player kinematic body & capsule collider
-    const bodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, 2, 0);
-    this.playerBody = this.world.createRigidBody(bodyDesc);
+    const controller = this.world.createCharacterController(0.06);
+    controller.enableAutostep(0.45, 0.25, true);
+    controller.enableSnapToGround(0.35);
+    controller.setMaxSlopeClimbAngle((52 * Math.PI) / 180);
+    controller.setMinSlopeSlideAngle((58 * Math.PI) / 180);
+
+    const offsetY =
+      GAME_CONFIG.player.capsuleHalfHeight + GAME_CONFIG.player.capsuleRadius;
+    const initX = footPos ? footPos.x : 0;
+    const initY = (footPos ? footPos.y : 0.2) + offsetY;
+    const initZ = footPos ? footPos.z : 0;
+
+    const bodyDesc =
+      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
+        initX,
+        initY,
+        initZ
+      );
+    const body = this.world.createRigidBody(bodyDesc);
     const colDesc = RAPIER.ColliderDesc.capsule(
       GAME_CONFIG.player.capsuleHalfHeight,
       GAME_CONFIG.player.capsuleRadius
     ).setFriction(0.1);
-    this.playerCollider = this.world.createCollider(colDesc, this.playerBody);
+    const collider = this.world.createCollider(colDesc, body);
+
+    const actor: PlayerPhysicsActor = {
+      id: playerId,
+      body,
+      collider,
+      controller,
+    };
+    this.playerActors.set(playerId, actor);
+    this.playerColliderHandles.add(collider.handle);
+    return actor;
+  }
+
+  public removePlayerActor(playerId: string): void {
+    const actor = this.playerActors.get(playerId);
+    if (!actor) return;
+    this.playerColliderHandles.delete(actor.collider.handle);
+    this.playerActors.delete(playerId);
+    if (!this.disposed && this.world) {
+      try {
+        this.world.removeCharacterController(actor.controller);
+        this.world.removeRigidBody(actor.body);
+      } catch {
+        // Ignore if world is already being torn down
+      }
+    }
+  }
+
+  public getPlayerActorCount(): number {
+    return this.playerActors.size;
+  }
+
+  public hasPlayerActor(playerId: string): boolean {
+    return this.playerActors.has(playerId);
+  }
+
+  public getPlayerCapsuleCenter(playerId = 'local'): THREE.Vector3 | null {
+    const actor = this.playerActors.get(playerId);
+    if (!actor) return null;
+    const t = actor.body.translation();
+    return new THREE.Vector3(t.x, t.y, t.z);
   }
 
   public clearStaticWorld(): void {
-    // Recreate world and player collider cleanly when resetting/switching map
-    const pos = this.playerBody
-      ? this.playerBody.translation()
-      : { x: 0, y: 2, z: 0 };
+    const savedPositions = new Map<string, THREE.Vector3>();
+    const offsetY =
+      GAME_CONFIG.player.capsuleHalfHeight + GAME_CONFIG.player.capsuleRadius;
+
+    for (const [id, actor] of this.playerActors.entries()) {
+      const t = actor.body.translation();
+      savedPositions.set(
+        id,
+        new THREE.Vector3(t.x, Math.max(0, t.y - offsetY), t.z)
+      );
+    }
+
+    this.freeRapierWorld();
 
     this.colliderMeta.clear();
     this.staticBoxes = [];
-    this.world = new RAPIER.World({ x: 0, y: GAME_CONFIG.physics.gravity, z: 0 });
+    this.disposed = false;
+    this.world = new RAPIER.World({
+      x: 0,
+      y: GAME_CONFIG.physics.gravity,
+      z: 0,
+    });
 
-    this.characterController = this.world.createCharacterController(0.06);
-    this.characterController.enableAutostep(0.45, 0.25, true);
-    this.characterController.enableSnapToGround(0.35);
-    this.characterController.setMaxSlopeClimbAngle((52 * Math.PI) / 180);
+    if (savedPositions.size === 0) {
+      this.ensurePlayerActor('local', new THREE.Vector3(0, 0.2, 0));
+    } else {
+      for (const [id, pos] of savedPositions.entries()) {
+        this.ensurePlayerActor(id, pos);
+      }
+    }
+  }
 
-    const bodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-      pos.x,
-      pos.y,
-      pos.z
-    );
-    this.playerBody = this.world.createRigidBody(bodyDesc);
-    const colDesc = RAPIER.ColliderDesc.capsule(
-      GAME_CONFIG.player.capsuleHalfHeight,
-      GAME_CONFIG.player.capsuleRadius
-    );
-    this.playerCollider = this.world.createCollider(colDesc, this.playerBody);
+  public dispose(): void {
+    this.freeRapierWorld();
+    this.colliderMeta.clear();
+    this.staticBoxes = [];
+  }
+
+  private freeRapierWorld(): void {
+    if (this.disposed || !this.world) return;
+    for (const actor of this.playerActors.values()) {
+      try {
+        this.world.removeCharacterController(actor.controller);
+      } catch {
+        // Ignore
+      }
+    }
+    this.playerActors.clear();
+    this.playerColliderHandles.clear();
+    try {
+      this.world.free();
+    } catch {
+      // Ignore if already freed
+    }
+    this.disposed = true;
   }
 
   public addStaticBox(
@@ -152,15 +268,18 @@ export class PhysicsWorld {
     return this.staticBoxes;
   }
 
-  public setPlayerPosition(pos: THREE.Vector3): void {
+  public setPlayerPosition(pos: THREE.Vector3, playerId = 'local'): void {
+    const actor = this.ensurePlayerActor(playerId);
     const capsuleCenterY =
-      pos.y + GAME_CONFIG.player.capsuleHalfHeight + GAME_CONFIG.player.capsuleRadius;
-    this.playerBody.setNextKinematicTranslation({
+      pos.y +
+      GAME_CONFIG.player.capsuleHalfHeight +
+      GAME_CONFIG.player.capsuleRadius;
+    actor.body.setNextKinematicTranslation({
       x: pos.x,
       y: capsuleCenterY,
       z: pos.z,
     });
-    this.playerBody.setTranslation(
+    actor.body.setTranslation(
       { x: pos.x, y: capsuleCenterY, z: pos.z },
       true
     );
@@ -168,24 +287,26 @@ export class PhysicsWorld {
   }
 
   /**
-   * Moves the player character capsule by desiredDelta, resolving world collisions via Rapier.
-   * Returns corrected foot position, grounded state, and whether a wall was hit.
+   * Moves the specified player's character capsule by desiredDelta, resolving world collisions
+   * via that player's isolated Rapier KinematicCharacterController & Collider.
    */
   public moveCharacter(
     currentFootPos: THREE.Vector3,
     desiredDelta: THREE.Vector3,
-    isAirborneOrSwinging: boolean
+    isAirborneOrSwinging: boolean,
+    playerId = 'local'
   ): {
     footPosition: THREE.Vector3;
     grounded: boolean;
     hitWall: boolean;
     wallNormal: THREE.Vector3 | null;
   } {
+    const actor = this.ensurePlayerActor(playerId);
     const offsetY =
       GAME_CONFIG.player.capsuleHalfHeight + GAME_CONFIG.player.capsuleRadius;
 
-    // Ensure body matches currentFootPos before computing movement
-    this.playerBody.setTranslation(
+    // Ensure this player's body matches currentFootPos before computing movement
+    actor.body.setTranslation(
       {
         x: currentFootPos.x,
         y: currentFootPos.y + offsetY,
@@ -195,27 +316,36 @@ export class PhysicsWorld {
     );
 
     if (isAirborneOrSwinging) {
-      this.characterController.disableSnapToGround();
+      actor.controller.disableSnapToGround();
     } else {
-      this.characterController.enableSnapToGround(0.35);
+      actor.controller.enableSnapToGround(0.35);
     }
 
-    this.characterController.computeColliderMovement(
-      this.playerCollider,
+    actor.controller.computeColliderMovement(
+      actor.collider,
       { x: desiredDelta.x, y: desiredDelta.y, z: desiredDelta.z },
       undefined,
       undefined,
-      (collider) => collider.handle !== this.playerCollider.handle
+      (collider) => {
+        if (collider.handle === actor.collider.handle) return false;
+        if (
+          !this.playerToPlayerCollision &&
+          this.playerColliderHandles.has(collider.handle)
+        ) {
+          return false;
+        }
+        return true;
+      }
     );
 
-    const corrected = this.characterController.computedMovement();
-    const grounded = this.characterController.computedGrounded();
+    const corrected = actor.controller.computedMovement();
+    const grounded = actor.controller.computedGrounded();
 
     let hitWall = false;
     let wallNormal: THREE.Vector3 | null = null;
-    const numCollisions = this.characterController.numComputedCollisions();
+    const numCollisions = actor.controller.numComputedCollisions();
     for (let i = 0; i < numCollisions; i++) {
-      const col = this.characterController.computedCollision(i);
+      const col = actor.controller.computedCollision(i);
       if (col && col.normal1) {
         if (Math.abs(col.normal1.y) < 0.45) {
           hitWall = true;
@@ -235,7 +365,7 @@ export class PhysicsWorld {
       currentFootPos.z + corrected.z
     );
 
-    this.playerBody.setNextKinematicTranslation({
+    actor.body.setNextKinematicTranslation({
       x: nextFootPos.x,
       y: nextFootPos.y + offsetY,
       z: nextFootPos.z,
@@ -250,11 +380,13 @@ export class PhysicsWorld {
   }
 
   public step(): void {
-    this.world.step();
+    if (!this.disposed && this.world) {
+      this.world.step();
+    }
   }
 
   /**
-   * Casts a ray in the Rapier world, ignoring the player capsule.
+   * Casts a ray in the Rapier world, ignoring all player character capsules.
    */
   public castRay(
     origin: THREE.Vector3,
@@ -262,6 +394,9 @@ export class PhysicsWorld {
     maxToi: number,
     onlyGrappleable = false
   ): RaycastHitResult | null {
+    if (this.disposed || !this.world) return null;
+    const lenSq = direction.lengthSq();
+    if (lenSq < 1e-8) return null;
     const dir = direction.clone().normalize();
     const ray = new RAPIER.Ray(
       { x: origin.x, y: origin.y, z: origin.z },
@@ -274,10 +409,10 @@ export class PhysicsWorld {
       true,
       undefined,
       undefined,
-      this.playerCollider,
+      undefined,
       undefined,
       (collider) => {
-        if (collider.handle === this.playerCollider.handle) return false;
+        if (this.playerColliderHandles.has(collider.handle)) return false;
         const meta = this.colliderMeta.get(collider.handle);
         if (!meta) return false;
         if (onlyGrappleable && !meta.grappleable) return false;
@@ -307,5 +442,24 @@ export class PhysicsWorld {
       distance: hit.timeOfImpact,
       metadata: meta,
     };
+  }
+
+  /**
+   * Checks whether there is an unobstructed line of sight between `origin` and `target`
+   * (no solid world building, wall, tower, or ground blocking the segment).
+   */
+  public hasLineOfSight(
+    origin: THREE.Vector3,
+    target: THREE.Vector3,
+    tolerance = 0.9
+  ): boolean {
+    const toTarget = target.clone().sub(origin);
+    const totalDist = toTarget.length();
+    if (totalDist <= tolerance) return true;
+
+    const hit = this.castRay(origin, toTarget.divideScalar(totalDist), totalDist, false);
+    if (!hit) return true;
+    // Allow minor grazing near the target surface itself within `tolerance`
+    return hit.distance >= totalDist - tolerance;
   }
 }

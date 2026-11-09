@@ -47,9 +47,24 @@ export class MissionManager {
 
   constructor(private scene: THREE.Scene) {}
 
+  private disposeTitanResources(t: TitanEntity): void {
+    this.scene.remove(t.rig.rootGroup);
+    t.rig.rootGroup.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (mesh.isMesh) {
+        mesh.geometry?.dispose();
+        if (Array.isArray(mesh.material)) {
+          mesh.material.forEach((m) => m.dispose());
+        } else if (mesh.material) {
+          mesh.material.dispose();
+        }
+      }
+    });
+  }
+
   public clearTitans(): void {
     for (const t of this.titans) {
-      this.scene.remove(t.rig.rootGroup);
+      this.disposeTitanResources(t);
     }
     this.titans = [];
   }
@@ -198,7 +213,7 @@ export class MissionManager {
     for (let i = this.titans.length - 1; i >= 0; i--) {
       const t = this.titans[i];
       if (!serverIds.has(t.id)) {
-        this.scene.remove(t.rig.rootGroup);
+        this.disposeTitanResources(t);
         this.titans.splice(i, 1);
       }
     }
@@ -273,7 +288,7 @@ export class MissionManager {
     // Clean up dead Titans that finished their steam evaporation fade
     for (let i = this.titans.length - 1; i >= 0; i--) {
       if (this.titans[i].readyForRemoval) {
-        this.scene.remove(this.titans[i].rig.rootGroup);
+        this.disposeTitanResources(this.titans[i]);
         this.titans.splice(i, 1);
       }
     }

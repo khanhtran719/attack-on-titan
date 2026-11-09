@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import { CombatSystem } from '../combat/CombatSystem';
-import { UserSettings } from '../config/GameConfig';
+import {
+  GraphicsQuality,
+  TacticalOverlayKeyMode,
+  UserSettings,
+} from '../config/GameConfig';
 import { SaveProgress } from '../core/SaveManager';
 import { TitanEntity } from '../enemies/TitanEntity';
 import { GameMode, MissionStatus } from '../missions/MissionManager';
@@ -8,30 +12,32 @@ import { RemotePlayerEntity } from '../network/RemotePlayerManager';
 import { ODMSystem, ReticleGrapplePreview } from '../odm/ODMSystem';
 import { PlayerController } from '../player/PlayerController';
 import { NetRoomState, PublicRoomSummary } from '../shared/Protocol';
+import { HudController } from './HudController';
+import { TacticalOverlayController } from './TacticalOverlayController';
+import { WorldMarkersController } from './WorldMarkersController';
 
 export interface UICallbacks {
   onStartGame: (mode: GameMode) => void;
   onResumeGame: () => void;
   onRestartMission: () => void;
   onReturnMainMenu: () => void;
-  onSettingsChanged: (newSettings: Partial<UserSettings>) => void;
-  // Multiplayer Co-op Callbacks
+  onSettingsChanged: (settings: Partial<UserSettings>) => void;
   onOpenMultiplayerMenu?: () => void;
   onCreateMultiplayerRoom?: (params: {
-    serverUrl: string;
     nickname: string;
     roomName: string;
     isPrivate: boolean;
+    serverUrl: string;
   }) => void;
   onJoinMultiplayerByCode?: (params: {
-    serverUrl: string;
     nickname: string;
     roomCode: string;
+    serverUrl: string;
   }) => void;
   onJoinMultiplayerByRoomId?: (params: {
-    serverUrl: string;
     nickname: string;
     roomId: string;
+    serverUrl: string;
   }) => void;
   onRefreshPublicRooms?: (serverUrl: string) => void;
   onToggleReady?: () => void;
@@ -40,947 +46,1111 @@ export interface UICallbacks {
 }
 
 export class UIManager {
-  private root: HTMLElement;
-  private hudRoot!: HTMLElement;
-  private speedLinesEl!: HTMLElement;
-  private damageVignetteEl!: HTMLElement;
+  private container: HTMLElement;
+  private callbacks: UICallbacks;
+  private settings: UserSettings;
 
-  // HUD Elements
-  private missionTitleEl!: HTMLElement;
-  private missionObjEl!: HTMLElement;
-  private missionSubEl!: HTMLElement;
-  private squadPanelEl!: HTMLElement;
-  private netStatusEl!: HTMLElement;
-  private killsValEl!: HTMLElement;
-  private scoreValEl!: HTMLElement;
-  private timerValEl!: HTMLElement;
-  private comboBadgeEl!: HTMLElement;
+  // Sub-controllers
+  private hudController!: HudController;
+  private worldMarkersController!: WorldMarkersController;
+  private tacticalOverlayController!: TacticalOverlayController;
 
-  private hpBarEl!: HTMLElement;
-  private hpTextEl!: HTMLElement;
-  private gasBarEl!: HTMLElement;
-  private gasTextEl!: HTMLElement;
-  private bladeBarEl!: HTMLElement;
-  private bladeTextEl!: HTMLElement;
-  private bladePipsEl!: HTMLElement;
-  private spearTextEl!: HTMLElement;
-  private spearPipsEl!: HTMLElement;
-  private speedTextEl!: HTMLElement;
-
-  private crosshairRingEl!: HTMLElement;
-  private leftBracketEl!: HTMLElement;
-  private rightBracketEl!: HTMLElement;
-
-  private targetMarkerEl!: HTMLElement;
-  private targetLabelEl!: HTMLElement;
-  private centerPromptEl!: HTMLElement;
-  private downedBannerEl!: HTMLElement;
-  private combatBannerEl!: HTMLElement;
-  private debugOverlayEl!: HTMLElement;
-  private aiLabelsContainer!: HTMLElement;
-  private teammateLabelsContainer!: HTMLElement;
-  private pingMarkersContainer!: HTMLElement;
-
-  // Menu Screens
+  // Screen & Modal References
   private mainMenuEl!: HTMLElement;
-  private multiplayerScreenEl!: HTMLElement;
-  private mpBrowserViewEl!: HTMLElement;
-  private mpWaitingViewEl!: HTMLElement;
-  private mpErrorBannerEl!: HTMLElement;
-  private mpPublicRoomsListEl!: HTMLElement;
-  private mpLobbyPlayersListEl!: HTMLElement;
-  private mpLobbyRoomCodeEl!: HTMLElement;
-  private mpLobbyTitleEl!: HTMLElement;
-  private mpStartMatchBtn!: HTMLButtonElement;
-  private mpToggleReadyBtn!: HTMLButtonElement;
-
   private pauseMenuEl!: HTMLElement;
   private settingsModalEl!: HTMLElement;
+  private multiplayerModalEl!: HTMLElement;
   private resultScreenEl!: HTMLElement;
-  private resultCoopBoardEl!: HTMLElement;
+  private hudEl!: HTMLElement;
+  private pauseLeaveCoopBtn!: HTMLElement;
 
-  private bannerTimer = 0;
-  private quickChatBubbles: Map<string, { text: string; expiresAt: number }> =
-    new Map();
+  private lastLobbySignature = '';
 
   constructor(
     container: HTMLElement,
-    private settings: UserSettings,
-    private progress: SaveProgress,
-    private callbacks: UICallbacks
+    initialSettings: UserSettings,
+    progress: SaveProgress,
+    callbacks: UICallbacks
   ) {
-    this.root = container;
-    this.buildDOM();
+    this.container = container;
+    this.settings = initialSettings;
+    this.callbacks = callbacks;
+    this.buildDOM(progress);
+    this.hudController = new HudController(this.container);
+    this.worldMarkersController = new WorldMarkersController(this.container);
+    this.tacticalOverlayController = new TacticalOverlayController(
+      this.container
+    );
+    this.bindDOMEvents();
   }
 
   private getDefaultServerUrl(): string {
-    const envHost =
-      (typeof import.meta !== 'undefined' &&
-        (import.meta as any).env?.VITE_SERVER_HOST) ||
-      '';
-    if (envHost) {
-      if (envHost.startsWith('ws://') || envHost.startsWith('wss://')) {
-        return envHost;
+    const envUrl = (
+      import.meta as unknown as { env?: Record<string, string> }
+    ).env?.VITE_MULTIPLAYER_WS_URL;
+    if (envUrl) return envUrl;
+    if (typeof window !== 'undefined') {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.hostname || 'localhost';
+      if (
+        window.location.port === '' ||
+        window.location.port === '80' ||
+        window.location.port === '443' ||
+        window.location.port === '8080'
+      ) {
+        return `${proto}//${window.location.host}`;
       }
-      const proto =
-        typeof window !== 'undefined' && window.location?.protocol === 'https:'
-          ? 'wss'
-          : 'ws';
-      return `${proto}://${envHost}`;
-    }
-
-    if (typeof window !== 'undefined' && window.location?.hostname) {
-      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const port = window.location.port;
-      // In local Vite dev (5173) or test preview (4173), connect directly to :2567.
-      // In production Nginx (port 80/443/8080), use same-origin host proxied by Nginx!
-      if (port === '5173' || port === '4173') {
-        return `${proto}://${window.location.hostname}:2567`;
-      }
-      return `${proto}://${window.location.host}`;
+      return `${proto}//${host}:2567`;
     }
     return 'ws://localhost:2567';
   }
 
-  private getDefaultNickname(): string {
-    const rand = Math.floor(100 + Math.random() * 900);
-    return `Scout_${rand}`;
-  }
+  private buildDOM(progress: SaveProgress): void {
+    const savedNick =
+      typeof localStorage !== 'undefined'
+        ? localStorage.getItem('aot_mp_nickname') ||
+          'Scout_' + Math.floor(100 + Math.random() * 899)
+        : 'Scout_104';
 
-  private buildDOM(): void {
-    const defaultServer = this.getDefaultServerUrl();
-    const defaultNick = this.getDefaultNickname();
-
-    this.root.innerHTML = `
+    this.container.innerHTML = `
+      <!-- Subtle Speed Lines & Damage Vignette -->
       <div id="speed-lines-overlay"></div>
       <div id="damage-vignette"></div>
 
-      <!-- Active Gameplay HUD -->
-      <div id="hud-root" class="hud-root hidden">
-        <div class="hud-top-left">
-          <div class="mission-card">
-            <div class="mission-header" id="hud-mission-title">DEFENSE OF VALKENBURG</div>
-            <div class="mission-title" id="hud-mission-obj">Eliminate Titans</div>
-            <div class="mission-sub" id="hud-mission-sub">Strike the Nape weak point from behind.</div>
+      <!-- MINIMAL CINEMATIC GAMEPLAY HUD -->
+      <div id="gameplay-hud" class="hidden">
+        <!-- 3D Projected World Markers (Scoped inside Gameplay HUD) -->
+        <div id="target-lock-indicator" class="hidden">
+          <div class="target-lock-diamond">
+            <span class="tl-corner tl-nw"></span>
+            <span class="tl-corner tl-ne"></span>
+            <span class="tl-corner tl-sw"></span>
+            <span class="tl-corner tl-se"></span>
           </div>
-          <!-- Co-op Squad Status Panel -->
-          <div id="hud-squad-panel" class="squad-panel hidden"></div>
-        </div>
-
-        <div class="hud-top-right">
-          <div id="hud-net-status" class="net-status-pill hidden">ROOM: ------ | PING: 0ms | ONLINE</div>
-          <div class="stats-strip">
-            <div class="stat-item">
-              <span class="stat-label">TITANS SLAIN</span>
-              <span class="stat-value accent-crimson" id="hud-kills">0/7</span>
+          <div class="target-lock-meta">
+            <div id="target-lock-zone-text" class="target-lock-label">NAPE · 100%</div>
+            <div class="target-lock-hp-bar">
+              <div id="target-lock-hp-fill" class="target-lock-hp-fill"></div>
             </div>
-            <div class="stat-item">
-              <span class="stat-label">SCORE</span>
-              <span class="stat-value accent-gold" id="hud-score">0</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-label">TIME</span>
-              <span class="stat-value" id="hud-timer">00:00</span>
-            </div>
-          </div>
-          <div id="hud-combo" class="combo-badge hidden">2x COMBO</div>
-        </div>
-
-        <div class="hud-bottom-left">
-          <div class="bar-group">
-            <div class="bar-header">
-              <span>VANGUARD INTEGRITY (HP)</span>
-              <span id="hud-hp-text">100%</span>
-            </div>
-            <div class="bar-track">
-              <div class="bar-fill hp" id="hud-hp-bar"></div>
-            </div>
-          </div>
-
-          <div class="bar-group">
-            <div class="bar-header">
-              <span>ODM GAS PRESSURE</span>
-              <span id="hud-gas-text">100%</span>
-            </div>
-            <div class="bar-track">
-              <div class="bar-fill gas" id="hud-gas-bar"></div>
-            </div>
-          </div>
-
-          <div class="bar-group">
-            <div class="bar-header">
-              <span>MONO-BLADE SHARPNESS</span>
-              <span id="hud-blade-text">100% (6 SPARE)</span>
-            </div>
-            <div class="bar-track">
-              <div class="bar-fill blade" id="hud-blade-bar"></div>
-            </div>
-            <div class="blade-pips" id="hud-blade-pips"></div>
-          </div>
-
-          <div class="bar-group">
-            <div class="bar-header">
-              <span>THUNDER SPEARS [V]</span>
-              <span id="hud-spear-text" style="color:#fbbf24;">4/4 READY</span>
-            </div>
-            <div class="blade-pips" id="hud-spear-pips"></div>
-          </div>
-
-          <div class="speed-readout">
-            <span>AIRSPEED VELOCITY</span>
-            <strong id="hud-speed-text">0.0 m/s</strong>
           </div>
         </div>
 
-        <div class="hud-bottom-right">
-          <div class="key-hint"><span>Move / Air Steer</span><span class="key-badge">WASD</span></div>
-          <div class="key-hint"><span>Left / Right Grapple</span><span class="key-badge">LMB / RMB (or Z/X)</span></div>
-          <div class="key-hint"><span>Gas Thruster Boost</span><span class="key-badge">SHIFT</span></div>
-          <div class="key-hint"><span>Slash / Spin-Slash</span><span class="key-badge">F</span></div>
-          <div class="key-hint"><span>Fire Thunder Spear</span><span class="key-badge">V</span></div>
-          <div class="key-hint"><span>Aerial Dodge</span><span class="key-badge">Q</span></div>
-          <div class="key-hint"><span>Lock Titan / Cycle Limb</span><span class="key-badge">TAB / C / Wheel</span></div>
-          <div class="key-hint"><span>Reload Blades / Resupply</span><span class="key-badge">R</span></div>
-          <div class="key-hint"><span>Revive Ally / Ping / Chat</span><span class="key-badge">Hold E / G / 1-4</span></div>
-          <div class="key-hint"><span>Pause / Settings</span><span class="key-badge">ESC</span></div>
-        </div>
-
-        <div class="crosshair-container">
-          <div id="crosshair-left-bracket" class="hook-bracket left"></div>
-          <div id="crosshair-ring" class="crosshair-ring"></div>
-          <div class="crosshair-center"></div>
-          <div id="crosshair-right-bracket" class="hook-bracket right"></div>
-        </div>
-
-        <!-- 3D Projected Target Reticle -->
-        <div id="world-target-marker" class="world-marker hidden">
-          <div class="target-reticle nape">
-            <div id="world-target-label" class="target-reticle-label">NAPE [100%]</div>
-          </div>
-        </div>
-
-        <!-- 3D Projected AI State Labels -->
-        <div id="ai-labels-container"></div>
-
-        <!-- 3D Projected Co-op Teammate Overhead Labels -->
+        <div id="titan-ai-labels-container"></div>
         <div id="teammate-labels-container"></div>
-
-        <!-- 3D Projected Co-op Ping Markers -->
         <div id="ping-markers-container"></div>
 
-        <!-- Contextual Center Prompt, Downed Banner & Combat Banner -->
-        <div id="hud-downed-banner" class="downed-alert-banner hidden">CRITICAL INJURY — BLEEDING OUT</div>
-        <div id="hud-center-prompt" class="center-prompt hidden">[R] RESUPPLY GAS & BLADES</div>
-        <div id="hud-combat-banner" class="combat-banner" style="opacity: 0;">CRITICAL NAPE EXECUTION!</div>
-
-        <!-- Debug Overlay -->
-        <div id="hud-debug-overlay" class="debug-overlay"></div>
-      </div>
-
-      <!-- Main Menu Screen -->
-      <div id="main-menu-screen" class="menu-screen interactive-overlay">
-        <div class="menu-box">
-          <div>
-            <div class="game-logo-sub">THREE.JS + RAPIER 3D AERIAL ACTION</div>
-            <h1 class="game-logo-title">TITAN HUNTER 3D</h1>
+        <!-- Top-Left: Mission & Wave -->
+        <div id="hud-top-left" class="hud-corner-tl">
+          <div class="hud-mission-row">
+            <span id="hud-mission-title" class="hud-mission-name">Titan Hunt</span>
+            <span class="hud-divider-dot">·</span>
+            <span id="hud-wave-badge" class="hud-wave-pill">Wave 1 / 3</span>
           </div>
-          <p class="game-logo-desc">
-            Soar through the fortified city of Valkenburg with dual Omni-Directional Mobility grappling hooks. Build pendulum momentum, ignite gas thrusters, cripple Titan limbs, and sever their cervical Nape weak point at high velocity.
-          </p>
-          <div class="stats-strip" style="justify-content: space-between;">
-            <div class="stat-item" style="align-items: flex-start;">
-              <span class="stat-label">HIGH SCORE</span>
-              <span class="stat-value accent-gold" id="menu-highscore">${this.progress.highScore}</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-label">BEST RANK</span>
-              <span class="stat-value" id="menu-bestrank">${this.progress.bestRank}</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-label">TITANS SLAIN</span>
-              <span class="stat-value accent-crimson" id="menu-totalslain">${this.progress.totalTitansSlain}</span>
-            </div>
+          <div id="hud-mission-objective" class="hud-mission-sub hidden"></div>
+        </div>
+
+        <!-- Top-Right: Titans Slain / Target + Contextual Combo & Network Warning -->
+        <div id="hud-top-right" class="hud-corner-tr">
+          <div class="hud-target-counter">
+            <span class="hud-target-label">Titans Slain</span>
+            <span id="hud-kills" class="hud-target-value">0 / 7</span>
           </div>
-          <div class="menu-buttons">
-            <button id="btn-start-hunt" class="btn-military primary">
-              <span>DEPLOY: TITAN HUNT (SINGLE-PLAYER)</span>
-              <span>&#9654;</span>
-            </button>
-            <button id="btn-open-multiplayer" class="btn-military primary" style="border-left-color: #38d9c0;">
-              <span>MULTIPLAYER CO-OP (2–4 PLAYERS ONLINE)</span>
-              <span>&#9733;</span>
-            </button>
-            <button id="btn-start-training" class="btn-military">
-              <span>CADET PROVING GROUNDS (TRAINING MODE)</span>
-              <span>&#9654;</span>
-            </button>
-            <button id="btn-open-settings" class="btn-military">
-              <span>TACTICAL SETTINGS & DEBUG TOOLS</span>
-              <span>&#9881;</span>
-            </button>
+          <div id="hud-combo-badge" class="hud-combo-pill hidden">2× Combo</div>
+          <div id="hud-net-warning" class="hud-net-warning-pill hidden">Reconnecting...</div>
+        </div>
+
+        <!-- Center: Precision Crosshair & Dual ODM Hook Indicators -->
+        <div id="crosshair-container">
+          <!-- Left Hook Indicator (LMB / Z) -->
+          <div id="crosshair-left" class="crosshair-hook left hook-ready" data-hook-state="ready">
+            <svg class="hook-arc-svg" viewBox="0 0 28 44" fill="none" aria-hidden="true">
+              <path d="M22 4C11 10 7 16 7 22C7 28 11 34 22 40" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <span id="crosshair-left-state" class="hook-dist-tag"></span>
+          </div>
+
+          <!-- Center Reticle Ring & Dot -->
+          <div id="crosshair-ring" data-ring-state="idle"></div>
+          <div id="crosshair-dot"></div>
+
+          <!-- Right Hook Indicator (RMB / X) -->
+          <div id="crosshair-right" class="crosshair-hook right hook-ready" data-hook-state="ready">
+            <svg class="hook-arc-svg" viewBox="0 0 28 44" fill="none" aria-hidden="true">
+              <path d="M6 4C17 10 21 16 21 22C21 28 17 34 6 40" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <span id="crosshair-right-state" class="hook-dist-tag"></span>
           </div>
         </div>
-      </div>
 
-      <!-- Multiplayer Co-op Menu & Waiting Room Screen -->
-      <div id="multiplayer-lobby-screen" class="menu-screen interactive-overlay hidden">
-        <div class="menu-box wide">
-          <div>
-            <div class="game-logo-sub">COLYSEUS + RAPIER 3D AUTHORITATIVE SERVER</div>
-            <h2 class="game-logo-title" id="mp-header-title">MULTIPLAYER CO-OP</h2>
+        <!-- Contextual Center Banners & Action Prompts -->
+        <div id="combat-banner" class="combat-banner hidden"></div>
+        <div id="resupply-prompt" class="contextual-prompt hidden" data-prompt-mode="tactical">
+          <div id="resupply-prompt-text" class="contextual-prompt-text">Press [R] to Resupply</div>
+          <div id="context-progress-track" class="contextual-progress-track hidden">
+            <div id="context-progress-fill" class="contextual-progress-fill"></div>
           </div>
+        </div>
 
-          <div id="mp-error-banner" class="mp-error-banner hidden"></div>
-
-          <!-- View 1: Room Browser / Create / Join -->
-          <div id="mp-browser-view" style="display: flex; flex-direction: column; gap: 14px;">
-            <div class="mp-section">
-              <div class="mp-section-title">1. Scout Identity & Server</div>
-              <div class="mp-row">
-                <input id="mp-nickname-input" class="mp-input" type="text" maxlength="16" placeholder="Scout Nickname" value="${defaultNick}" />
-                <input id="mp-server-url" class="mp-input" type="text" placeholder="ws://localhost:2567" value="${defaultServer}" />
+        <!-- Bottom-Left: Slim HP & Gas Bars + Subtle Speedometer -->
+        <div id="hud-bottom-left" class="hud-corner-bl">
+          <div class="hud-vitals-stack">
+            <div id="hud-hp-group" class="hud-vital-row">
+              <div class="hud-vital-meta">
+                <span class="hud-vital-label">HP</span>
+                <span id="hp-text" class="hud-vital-num">100</span>
+              </div>
+              <div class="hud-slim-track">
+                <div id="hp-bar-fill" class="hud-slim-fill hp-fill" style="width: 100%"></div>
               </div>
             </div>
 
-            <div class="mp-section">
-              <div class="mp-section-title">2. Create Co-op Squad Room (Max 4 Players)</div>
-              <div class="mp-row">
-                <input id="mp-room-name-input" class="mp-input" type="text" maxlength="24" placeholder="Squad Room Name" value="Valkenburg Vanguard" />
-                <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#cbd5e1;cursor:pointer;">
-                  <input id="mp-private-checkbox" type="checkbox" />
-                  Private Room (Code Only)
+            <div id="hud-gas-group" class="hud-vital-row">
+              <div class="hud-vital-meta">
+                <span class="hud-vital-label">GAS</span>
+                <span id="gas-text" class="hud-vital-num">100%</span>
+              </div>
+              <div class="hud-slim-track">
+                <div id="gas-bar-fill" class="hud-slim-fill gas-fill" style="width: 100%"></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="speed-readout" class="hud-speed-compact">
+            <span id="speed-value" class="hud-speed-num">0</span>
+            <span class="hud-speed-unit">m/s</span>
+          </div>
+        </div>
+
+        <!-- Bottom-Right: Blades, Thunder Spears & Subtle Tactical Overlay Hint -->
+        <div id="hud-bottom-right" class="hud-corner-br">
+          <div class="hud-weapons-panel">
+            <!-- Blades -->
+            <div id="hud-blade-group" class="hud-weapon-block">
+              <div class="hud-weapon-header">
+                <span class="hud-weapon-name">Blades</span>
+                <span id="blade-text" class="hud-weapon-val">100%</span>
+              </div>
+              <div class="hud-slim-track blade-track">
+                <div id="blade-bar-fill" class="hud-slim-fill blade-fill" style="width: 100%"></div>
+              </div>
+              <div id="blade-pips" class="hud-pips-row"></div>
+            </div>
+
+            <!-- Thunder Spears -->
+            <div class="hud-weapon-block spear-block">
+              <div class="hud-weapon-header">
+                <span class="hud-weapon-name">Spears <kbd>V</kbd></span>
+                <span id="spear-text" class="hud-weapon-val">4 / 4</span>
+              </div>
+              <div id="spear-pips" class="hud-pips-row"></div>
+            </div>
+          </div>
+
+          <div id="tactical-hint-pill" class="hud-tactical-hint">
+            Hold <kbd id="hud-tactical-key-pill">H</kbd> Tactical Info
+          </div>
+        </div>
+
+        <!-- TACTICAL OVERLAY (Shown on Hold [H / ~] or [Tab] when configured) -->
+        <div id="hud-tactical-overlay" class="tactical-overlay" aria-hidden="true">
+          <div class="tactical-card">
+            <div class="tactical-header">
+              <div>
+                <div class="tactical-eyebrow">Tactical Situation Report</div>
+                <h3 id="tactical-mission-title" class="tactical-title">Titan Hunt</h3>
+                <p id="tactical-mission-objective" class="tactical-objective">Eliminate all hostile Titans in the sector.</p>
+              </div>
+              <div class="tactical-badges">
+                <span id="tactical-room-badge" class="tactical-badge">SOLO DEPLOYMENT</span>
+                <span id="tactical-overlay-key-label" class="tactical-badge muted">Hold [H / ~]</span>
+              </div>
+            </div>
+
+            <div class="tactical-stats-grid">
+              <div class="tactical-stat-box">
+                <span class="tactical-stat-label">Combat Score</span>
+                <span id="hud-score" class="tactical-stat-value">0</span>
+              </div>
+              <div class="tactical-stat-box">
+                <span class="tactical-stat-label">Elapsed Time</span>
+                <span id="hud-time" class="tactical-stat-value">00:00</span>
+              </div>
+              <div class="tactical-stat-box">
+                <span class="tactical-stat-label">Projected Rank</span>
+                <span id="hud-rank" class="tactical-stat-value accent-gold">A</span>
+              </div>
+              <div id="hud-ping-pill" class="tactical-stat-box hidden">
+                <span class="tactical-stat-label">Network RTT</span>
+                <span id="hud-ping" class="tactical-stat-value">0 ms</span>
+              </div>
+              <div class="tactical-stat-box">
+                <span class="tactical-stat-label">Frame Rate</span>
+                <span id="tactical-fps" class="tactical-stat-value">60 FPS</span>
+              </div>
+            </div>
+
+            <div id="tactical-squad-section" class="tactical-section hidden">
+              <div class="tactical-section-title">Active Scout Squad</div>
+              <div id="hud-squad-panel" class="tactical-squad-grid hidden"></div>
+            </div>
+
+            <div class="tactical-section">
+              <div class="tactical-section-title">ODM & Combat Controls</div>
+              <div class="tactical-controls-grid">
+                <div class="tactical-ctrl-item"><kbd>LMB</kbd> / <kbd>Z</kbd> <span>Left Grapple Hook</span></div>
+                <div class="tactical-ctrl-item"><kbd>RMB</kbd> / <kbd>X</kbd> <span>Right Grapple Hook</span></div>
+                <div class="tactical-ctrl-item"><kbd>Shift</kbd> <span>Gas Reel Boost</span></div>
+                <div class="tactical-ctrl-item"><kbd>F</kbd> <span>Blade Slash / Spin-Slash</span></div>
+                <div class="tactical-ctrl-item"><kbd>V</kbd> <span>Fire Thunder Spear</span></div>
+                <div class="tactical-ctrl-item"><kbd>Q</kbd> <span>Aerial Dodge Impulse</span></div>
+                <div class="tactical-ctrl-item"><kbd id="tactical-lock-key-label">Tab / MMB</kbd> <span>Target Lock Titan</span></div>
+                <div class="tactical-ctrl-item"><kbd>Wheel</kbd> / <kbd>C</kbd> <span>Cycle Weak Point</span></div>
+                <div class="tactical-ctrl-item"><kbd>R</kbd> <span>Reload / Supply Depot</span></div>
+                <div class="tactical-ctrl-item"><kbd>E</kbd> <span>Revive Downed Ally</span></div>
+                <div class="tactical-ctrl-item"><kbd>G</kbd> / <kbd>1–4</kbd> <span>3D Ping / Quick Comms</span></div>
+                <div class="tactical-ctrl-item"><kbd>Esc</kbd> / <kbd>P</kbd> <span>Pause Menu</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Optional Developer Performance Telemetry (Off by default) -->
+        <div id="debug-overlay" class="debug-telemetry-bar hidden"></div>
+      </div>
+
+      <!-- CINEMATIC MAIN MENU -->
+      <div id="main-menu" class="menu-screen main-menu-screen">
+        <div class="main-menu-layout">
+          <div class="main-menu-brand">
+            <div class="brand-eyebrow">104th Cadet Corps · Tactical Aerial Simulation</div>
+            <h1 class="brand-title">Attack on Titan</h1>
+            <p class="brand-subtitle">Three-Dimensional Maneuver Gear & Co-op Titan Warfare</p>
+          </div>
+
+          <nav class="main-menu-nav" aria-label="Main Menu">
+            <button id="btn-start-hunt" class="nav-action-btn primary">
+              <span class="nav-btn-text">
+                <span class="nav-btn-title">Play — Titan Hunt</span>
+                <span class="nav-btn-desc">Solo 3-wave defense inside the fortified district</span>
+              </span>
+              <span class="nav-btn-arrow">→</span>
+            </button>
+
+            <button id="btn-open-multiplayer" class="nav-action-btn accent">
+              <span class="nav-btn-text">
+                <span class="nav-btn-title">Multiplayer Co-op</span>
+                <span class="nav-btn-desc">2–4 Scout real-time squad operations</span>
+              </span>
+              <span class="nav-btn-arrow">→</span>
+            </button>
+
+            <button id="btn-start-training" class="nav-action-btn">
+              <span class="nav-btn-text">
+                <span class="nav-btn-title">ODM Training</span>
+                <span class="nav-btn-desc">Guided grapple, gas boost & nape strike drills</span>
+              </span>
+              <span class="nav-btn-arrow">→</span>
+            </button>
+
+            <button id="btn-open-settings" class="nav-action-btn">
+              <span class="nav-btn-text">
+                <span class="nav-btn-title">Settings</span>
+                <span class="nav-btn-desc">Controls, camera, graphics & diagnostics</span>
+              </span>
+              <span class="nav-btn-arrow">→</span>
+            </button>
+          </nav>
+
+          <footer id="menu-progress-stats" class="main-menu-footer">
+            ${this.renderProgressMarkup(progress)}
+          </footer>
+        </div>
+      </div>
+
+      <!-- MULTIPLAYER ROOM BROWSER & CO-OP WAITING LOBBY -->
+      <div id="multiplayer-modal" class="menu-screen modal-backdrop hidden">
+        <div class="tactical-modal mp-modal-card">
+          <header class="modal-header">
+            <div>
+              <div class="modal-eyebrow">Real-Time Co-op Network</div>
+              <h2 class="modal-title">Scout Squad Operations</h2>
+            </div>
+            <button id="btn-close-mp" class="btn-ghost-sm">Back to Menu</button>
+          </header>
+
+          <div id="mp-error-banner" class="status-banner danger hidden"></div>
+
+          <!-- Scout Profile & Server Endpoint Bar -->
+          <div class="mp-identity-bar">
+            <label class="field-group">
+              <span class="field-label">Scout Callsign</span>
+              <input id="mp-nickname-input" type="text" maxlength="18" value="${savedNick}" placeholder="Enter callsign..." />
+            </label>
+            <label class="field-group">
+              <span class="field-label">Server Endpoint</span>
+              <input id="mp-server-url" type="text" value="${this.getDefaultServerUrl()}" />
+            </label>
+          </div>
+
+          <!-- View A: Room Browser / Create / Join -->
+          <div id="mp-browser-section" class="mp-browser-grid">
+            <!-- Left Column: Create or Join by Code -->
+            <div class="mp-column-stack">
+              <section class="mp-panel">
+                <h3 class="panel-heading">Create Squad Room</h3>
+                <p class="panel-desc">Host a new 2–4 player Co-op instance.</p>
+                <label class="field-group">
+                  <span class="field-label">Operation Name</span>
+                  <input id="mp-room-name-input" type="text" maxlength="28" value="Trost District Defense" />
                 </label>
-                <button id="btn-mp-create-room" class="btn-military primary" style="padding: 9px 16px;">
-                  <span>CREATE ROOM</span>
-                </button>
-              </div>
+                <label class="checkbox-line">
+                  <input id="mp-private-checkbox" type="checkbox" />
+                  <span>Private Room (Invite via 6-character code only)</span>
+                </label>
+                <button id="btn-mp-create-room" class="btn-solid primary full-width">Create Room</button>
+              </section>
+
+              <section class="mp-panel">
+                <h3 class="panel-heading">Join by Room Code</h3>
+                <div class="code-join-row">
+                  <input id="mp-room-code-input" type="text" maxlength="6" placeholder="CODE6X" class="code-input" />
+                  <button id="btn-mp-join-code" class="btn-solid">Join Squad</button>
+                </div>
+              </section>
             </div>
 
-            <div class="mp-section">
-              <div class="mp-section-title">3. Join by 6-Character Room Code</div>
-              <div class="mp-row">
-                <input id="mp-room-code-input" class="mp-input" type="text" maxlength="6" placeholder="ENTER 6-CHAR CODE (e.g. VK7M2P)" style="text-transform: uppercase;" />
-                <button id="btn-mp-join-code" class="btn-military" style="padding: 9px 16px;">
-                  <span>JOIN BY CODE</span>
-                </button>
-              </div>
-            </div>
-
-            <div class="mp-section">
-              <div class="mp-row" style="justify-content: space-between;">
-                <span class="mp-section-title">4. Active Public Squad Rooms</span>
-                <button id="btn-mp-refresh-rooms" class="btn-military" style="padding: 5px 12px; font-size: 11px;">
-                  <span>REFRESH LIST &#8635;</span>
-                </button>
-              </div>
-              <div id="mp-public-rooms-list" class="mp-rooms-list">
-                <div style="font-size: 12px; color: #94a3b8;">Click Refresh or create a new room to begin.</div>
-              </div>
-            </div>
-
-            <div class="menu-buttons">
-              <button id="btn-mp-back-main" class="btn-military">
-                <span>RETURN TO MAIN MENU</span>
-                <span>&#8592;</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- View 2: Connected Room Waiting Lobby -->
-          <div id="mp-waiting-room-view" class="hidden" style="display: flex; flex-direction: column; gap: 16px;">
-            <div class="mp-section">
-              <div class="mp-row" style="justify-content: space-between;">
+            <!-- Right Column: Public Rooms List -->
+            <section class="mp-panel mp-public-panel">
+              <div class="panel-header-inline">
                 <div>
-                  <div class="mp-section-title" id="mp-lobby-room-title">SQUAD BRIEFING ROOM</div>
-                  <div style="font-size: 12px; color: #94a3b8; margin-top: 2px;">Share the Room Code so 2–4 Scouts can join this deployment.</div>
+                  <h3 class="panel-heading">Active Public Squads</h3>
+                  <p class="panel-desc">Join an open deployment lobby.</p>
                 </div>
-                <div style="text-align: right;">
-                  <div style="font-size: 10px; color: #94a3b8; letter-spacing: 1px;">ROOM CODE</div>
-                  <div id="mp-lobby-room-code" class="mp-room-code-badge">------</div>
-                </div>
+                <button id="btn-mp-refresh-rooms" class="btn-ghost-sm">Refresh</button>
+              </div>
+              <div id="mp-public-rooms-list" class="public-rooms-list">
+                <div class="empty-list-state">Click Refresh to scan for active lobbies...</div>
+              </div>
+            </section>
+          </div>
+
+          <!-- View B: 4-Slot Co-op Waiting Lobby -->
+          <div id="mp-waiting-room-section" class="mp-waiting-lobby hidden">
+            <div class="lobby-top-bar">
+              <div>
+                <div class="modal-eyebrow">Waiting for Deployment</div>
+                <div id="mp-lobby-status-text" class="lobby-status-headline">Waiting for players to ready up...</div>
+              </div>
+
+              <div class="room-code-cluster">
+                <span class="room-code-caption">Room Code</span>
+                <span id="mp-lobby-room-code" class="room-code-badge">------</span>
+                <button id="btn-mp-copy-code" class="btn-ghost-sm" type="button">Copy Code</button>
               </div>
             </div>
 
-            <div class="mp-section">
-              <div class="mp-section-title">Connected Vanguard Scouts (Max 4)</div>
-              <div id="mp-lobby-players-list" class="mp-players-list"></div>
-            </div>
+            <!-- 4 Visual Player Slots -->
+            <div id="mp-lobby-players-list" class="lobby-slots-grid"></div>
 
-            <div class="menu-buttons">
-              <button id="btn-mp-toggle-ready" class="btn-military">
-                <span>TOGGLE READY STATUS</span>
-                <span>&#10003;</span>
-              </button>
-              <button id="btn-mp-start-match" class="btn-military primary">
-                <span>DEPLOY SQUAD (LEADER START)</span>
-                <span>&#9654;</span>
-              </button>
-              <button id="btn-mp-leave-room" class="btn-military">
-                <span>LEAVE ROOM</span>
-                <span>&#8592;</span>
-              </button>
+            <div class="lobby-footer-actions">
+              <button id="btn-mp-leave-room" class="btn-ghost">Leave Squad</button>
+              <div class="lobby-primary-actions">
+                <button id="btn-mp-toggle-ready" class="btn-solid">Ready Up</button>
+                <button id="btn-mp-start-match" class="btn-solid primary" disabled>Start Operation</button>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Pause Menu Screen -->
-      <div id="pause-menu-screen" class="menu-screen interactive-overlay hidden">
-        <div class="menu-box">
-          <div>
-            <div class="game-logo-sub">OPERATION PAUSED</div>
-            <h2 class="game-logo-title">COMMAND TENT</h2>
-          </div>
-          <div class="menu-buttons">
-            <button id="btn-resume" class="btn-military primary">
-              <span>RESUME COMBAT</span>
-              <span>&#9654;</span>
-            </button>
-            <button id="btn-restart" class="btn-military">
-              <span>RESTART MISSION</span>
-              <span>&#8635;</span>
-            </button>
-            <button id="btn-pause-settings" class="btn-military">
-              <span>SETTINGS & DEBUG OVERLAYS</span>
-              <span>&#9881;</span>
-            </button>
-            <button id="btn-pause-mainmenu" class="btn-military">
-              <span>RETURN TO MAIN MENU</span>
-              <span>&#8592;</span>
-            </button>
+      <!-- PAUSE MENU -->
+      <div id="pause-menu" class="menu-screen modal-backdrop hidden">
+        <div class="tactical-modal compact-modal">
+          <div class="modal-eyebrow">Simulation Paused</div>
+          <h2 class="modal-title">Tactical Pause</h2>
+          <div class="modal-button-stack">
+            <button id="btn-resume" class="btn-solid primary full-width">Resume Operation</button>
+            <button id="btn-restart" class="btn-solid full-width">Restart Mission</button>
+            <button id="btn-pause-settings" class="btn-ghost full-width">Settings</button>
+            <button id="btn-pause-leave-coop" class="btn-ghost danger full-width hidden">Leave Co-op Squad</button>
+            <button id="btn-pause-mainmenu" class="btn-ghost full-width">Return to Main Menu</button>
           </div>
         </div>
       </div>
 
-      <!-- Settings & Debug Modal -->
-      <div id="settings-modal-screen" class="menu-screen interactive-overlay hidden">
-        <div class="menu-box">
-          <div>
-            <div class="game-logo-sub">SYSTEM CONFIGURATION</div>
-            <h2 class="game-logo-title">SETTINGS & DEBUG</h2>
-          </div>
-          <div class="settings-grid">
-            <div class="setting-row">
-              <span>Mouse Look Sensitivity</span>
-              <input id="set-sensitivity" type="range" min="0.3" max="2.5" step="0.1" value="${this.settings.mouseSensitivity}" />
+      <!-- SETTINGS MODAL -->
+      <div id="settings-modal" class="menu-screen modal-backdrop hidden">
+        <div class="tactical-modal settings-modal-card">
+          <header class="modal-header">
+            <div>
+              <div class="modal-eyebrow">System Configuration</div>
+              <h2 class="modal-title">Settings</h2>
             </div>
-            <div class="setting-row">
-              <span>Camera Follow Distance</span>
-              <input id="set-camdist" type="range" min="3.5" max="9.5" step="0.2" value="${this.settings.cameraDistance}" />
+            <button id="btn-close-settings" class="btn-solid primary">Save & Close</button>
+          </header>
+
+          <div class="settings-columns">
+            <!-- Controls, Camera & Audio -->
+            <div class="settings-section">
+              <h3 class="panel-heading">Controls & Camera</h3>
+
+              <div class="setting-row">
+                <div class="setting-label-wrap">
+                  <span>Mouse Sensitivity</span>
+                  <strong id="val-sens">${this.settings.mouseSensitivity.toFixed(2)}</strong>
+                </div>
+                <input id="set-sens" type="range" min="0.2" max="2.5" step="0.05" value="${this.settings.mouseSensitivity}" />
+              </div>
+
+              <div class="setting-row">
+                <div class="setting-label-wrap">
+                  <span>Camera Distance</span>
+                  <strong id="val-camdist">${this.settings.cameraDistance.toFixed(1)}m</strong>
+                </div>
+                <input id="set-camdist" type="range" min="3.8" max="9.0" step="0.2" value="${this.settings.cameraDistance}" />
+              </div>
+
+              <div class="setting-row">
+                <div class="setting-label-wrap">
+                  <span>Tactical Overlay Keybind</span>
+                </div>
+                <select id="set-tactical-key">
+                  <option value="KeyH" ${(this.settings.tacticalOverlayKey || 'KeyH') === 'KeyH' ? 'selected' : ''}>Hold [H / ~] · Target Lock on [Tab]</option>
+                  <option value="Tab" ${this.settings.tacticalOverlayKey === 'Tab' ? 'selected' : ''}>Hold [Tab] · Target Lock on [MMB / T]</option>
+                </select>
+              </div>
+
+              <h3 class="panel-heading" style="margin-top: 18px;">Audio & Graphics</h3>
+
+              <div class="setting-row">
+                <div class="setting-label-wrap">
+                  <span>Master Volume</span>
+                  <strong id="val-volume">${Math.round(this.settings.masterVolume * 100)}%</strong>
+                </div>
+                <input id="set-volume" type="range" min="0" max="1" step="0.05" value="${this.settings.masterVolume}" />
+              </div>
+
+              <div class="setting-row">
+                <div class="setting-label-wrap">
+                  <span>Graphics Preset</span>
+                </div>
+                <select id="set-quality">
+                  <option value="low" ${this.settings.graphicsQuality === 'low' ? 'selected' : ''}>Low (Performance)</option>
+                  <option value="medium" ${this.settings.graphicsQuality === 'medium' ? 'selected' : ''}>Medium (Balanced)</option>
+                  <option value="high" ${this.settings.graphicsQuality === 'high' ? 'selected' : ''}>High (Fidelity + Shadows)</option>
+                </select>
+              </div>
             </div>
-            <div class="setting-row">
-              <span>Master Audio Volume</span>
-              <input id="set-volume" type="range" min="0" max="1" step="0.05" value="${this.settings.masterVolume}" />
+
+            <!-- Developer Diagnostics -->
+            <div class="settings-section">
+              <h3 class="panel-heading">Developer Diagnostics</h3>
+              <p class="panel-desc">Optional 3D physics and AI visualization overlays.</p>
+              <div class="diagnostics-checklist">
+                <label class="checkbox-line">
+                  <input id="dbg-perf" type="checkbox" ${this.settings.debug.showPerformanceOverlay ? 'checked' : ''} />
+                  <span>Show Performance Telemetry Bar</span>
+                </label>
+                <label class="checkbox-line">
+                  <input id="dbg-colliders" type="checkbox" ${this.settings.debug.showColliders ? 'checked' : ''} />
+                  <span>Show Physics Colliders</span>
+                </label>
+                <label class="checkbox-line">
+                  <input id="dbg-anchors" type="checkbox" ${this.settings.debug.showGrappleAnchors ? 'checked' : ''} />
+                  <span>Show ODM Grapple Anchors</span>
+                </label>
+                <label class="checkbox-line">
+                  <input id="dbg-hitboxes" type="checkbox" ${this.settings.debug.showTitanHitboxes ? 'checked' : ''} />
+                  <span>Show Titan Hurtboxes</span>
+                </label>
+                <label class="checkbox-line">
+                  <input id="dbg-weakpoints" type="checkbox" ${this.settings.debug.showWeakPoints ? 'checked' : ''} />
+                  <span>Highlight Nape Weak Points</span>
+                </label>
+                <label class="checkbox-line">
+                  <input id="dbg-velocity" type="checkbox" ${this.settings.debug.showVelocityVectors ? 'checked' : ''} />
+                  <span>Show Velocity Vectors</span>
+                </label>
+                <label class="checkbox-line">
+                  <input id="dbg-aistates" type="checkbox" ${this.settings.debug.showAIStates ? 'checked' : ''} />
+                  <span>Show 3D Titan AI State Tags</span>
+                </label>
+              </div>
             </div>
-            <div class="setting-row">
-              <span>Graphics Quality Preset</span>
-              <select id="set-quality">
-                <option value="low" ${this.settings.graphicsQuality === 'low' ? 'selected' : ''}>Low (Max FPS)</option>
-                <option value="medium" ${this.settings.graphicsQuality === 'medium' ? 'selected' : ''}>Medium</option>
-                <option value="high" ${this.settings.graphicsQuality === 'high' ? 'selected' : ''}>High (Shadows + 2x DPI)</option>
-              </select>
-            </div>
-            <div class="setting-row">
-              <span>Debug: Performance FPS Overlay</span>
-              <input id="dbg-perf" type="checkbox" ${this.settings.debug.showPerformanceOverlay ? 'checked' : ''} />
-            </div>
-            <div class="setting-row">
-              <span>Debug: Show Titan Hitboxes</span>
-              <input id="dbg-hitboxes" type="checkbox" ${this.settings.debug.showTitanHitboxes ? 'checked' : ''} />
-            </div>
-            <div class="setting-row">
-              <span>Debug: Show Nape Weak Points</span>
-              <input id="dbg-weakpoints" type="checkbox" ${this.settings.debug.showWeakPoints ? 'checked' : ''} />
-            </div>
-            <div class="setting-row">
-              <span>Debug: Show Grapple Anchors</span>
-              <input id="dbg-anchors" type="checkbox" ${this.settings.debug.showGrappleAnchors ? 'checked' : ''} />
-            </div>
-            <div class="setting-row">
-              <span>Debug: Show Velocity Vector</span>
-              <input id="dbg-velocity" type="checkbox" ${this.settings.debug.showVelocityVectors ? 'checked' : ''} />
-            </div>
-            <div class="setting-row">
-              <span>Debug: Show Titan AI States</span>
-              <input id="dbg-aistates" type="checkbox" ${this.settings.debug.showAIStates ? 'checked' : ''} />
-            </div>
-            <div class="setting-row">
-              <span>Debug: Show Player Collider</span>
-              <input id="dbg-colliders" type="checkbox" ${this.settings.debug.showColliders ? 'checked' : ''} />
-            </div>
-          </div>
-          <div class="menu-buttons">
-            <button id="btn-close-settings" class="btn-military primary">
-              <span>SAVE & RETURN</span>
-              <span>&#10003;</span>
-            </button>
           </div>
         </div>
       </div>
 
-      <!-- Victory / Defeat Result Screen -->
-      <div id="result-screen" class="menu-screen interactive-overlay hidden">
-        <div class="menu-box wide">
-          <div>
-            <div id="result-sub" class="game-logo-sub">MISSION REPORT</div>
-            <h2 id="result-title" class="game-logo-title">VICTORY</h2>
+      <!-- VICTORY / DEFEAT RESULTS SCREEN -->
+      <div id="result-screen" class="menu-screen modal-backdrop hidden">
+        <div class="tactical-modal result-modal-card">
+          <div class="modal-eyebrow" id="res-eyebrow">After-Action Report</div>
+          <h2 id="res-title" class="result-headline">MISSION COMPLETE</h2>
+          <p id="res-subtitle" class="result-subtitle">All hostile Titans neutralized.</p>
+
+          <div class="result-summary-layout">
+            <div class="result-rank-box">
+              <span class="result-rank-caption">Combat Evaluation</span>
+              <div id="res-rank" class="result-rank-emblem">S</div>
+            </div>
+
+            <div class="result-metrics-grid">
+              <div class="result-metric-card">
+                <span class="result-metric-label">Final Score</span>
+                <strong id="res-score" class="result-metric-val">0</strong>
+              </div>
+              <div class="result-metric-card">
+                <span class="result-metric-label">Clear Time</span>
+                <strong id="res-time" class="result-metric-val">0.0s</strong>
+              </div>
+              <div class="result-metric-card">
+                <span class="result-metric-label">Titans Slain</span>
+                <strong id="res-kills" class="result-metric-val">0</strong>
+              </div>
+            </div>
           </div>
-          <p id="result-desc" class="game-logo-desc">All hostile Titans in Valkenburg District have been eliminated.</p>
-          <div class="stats-strip" style="justify-content: space-between;">
-            <div class="stat-item" style="align-items: flex-start;">
-              <span class="stat-label">FINAL SCORE</span>
-              <span class="stat-value accent-gold" id="result-score">0</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-label">COMBAT RANK</span>
-              <span class="stat-value" id="result-rank">S</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-label">CLEAR TIME</span>
-              <span class="stat-value" id="result-time">00:00</span>
-            </div>
+
+          <div id="res-coop-scoreboard-wrap" class="result-scoreboard-section hidden">
+            <div class="tactical-section-title">Squad Performance Breakdown</div>
+            <div id="res-coop-scoreboard" class="result-scoreboard-list"></div>
           </div>
-          <div id="result-coop-scoreboard" class="mp-section hidden"></div>
-          <div class="menu-buttons">
-            <button id="btn-result-retry" class="btn-military primary">
-              <span>DEPLOY AGAIN</span>
-              <span>&#8635;</span>
-            </button>
-            <button id="btn-result-mainmenu" class="btn-military">
-              <span>RETURN TO MAIN MENU</span>
-              <span>&#8592;</span>
-            </button>
+
+          <div class="result-actions-row">
+            <button id="btn-res-menu" class="btn-ghost">Main Menu</button>
+            <button id="btn-res-retry" class="btn-solid primary">Deploy Again</button>
           </div>
         </div>
       </div>
     `;
 
-    this.hudRoot = this.root.querySelector('#hud-root')!;
-    this.speedLinesEl = this.root.querySelector('#speed-lines-overlay')!;
-    this.damageVignetteEl = this.root.querySelector('#damage-vignette')!;
-
-    this.missionTitleEl = this.root.querySelector('#hud-mission-title')!;
-    this.missionObjEl = this.root.querySelector('#hud-mission-obj')!;
-    this.missionSubEl = this.root.querySelector('#hud-mission-sub')!;
-    this.squadPanelEl = this.root.querySelector('#hud-squad-panel')!;
-    this.netStatusEl = this.root.querySelector('#hud-net-status')!;
-    this.killsValEl = this.root.querySelector('#hud-kills')!;
-    this.scoreValEl = this.root.querySelector('#hud-score')!;
-    this.timerValEl = this.root.querySelector('#hud-timer')!;
-    this.comboBadgeEl = this.root.querySelector('#hud-combo')!;
-
-    this.hpBarEl = this.root.querySelector('#hud-hp-bar')!;
-    this.hpTextEl = this.root.querySelector('#hud-hp-text')!;
-    this.gasBarEl = this.root.querySelector('#hud-gas-bar')!;
-    this.gasTextEl = this.root.querySelector('#hud-gas-text')!;
-    this.bladeBarEl = this.root.querySelector('#hud-blade-bar')!;
-    this.bladeTextEl = this.root.querySelector('#hud-blade-text')!;
-    this.bladePipsEl = this.root.querySelector('#hud-blade-pips')!;
-    this.spearTextEl = this.root.querySelector('#hud-spear-text')!;
-    this.spearPipsEl = this.root.querySelector('#hud-spear-pips')!;
-    this.speedTextEl = this.root.querySelector('#hud-speed-text')!;
-
-    this.crosshairRingEl = this.root.querySelector('#crosshair-ring')!;
-    this.leftBracketEl = this.root.querySelector('#crosshair-left-bracket')!;
-    this.rightBracketEl = this.root.querySelector('#crosshair-right-bracket')!;
-
-    this.targetMarkerEl = this.root.querySelector('#world-target-marker')!;
-    this.targetLabelEl = this.root.querySelector('#world-target-label')!;
-    this.centerPromptEl = this.root.querySelector('#hud-center-prompt')!;
-    this.downedBannerEl = this.root.querySelector('#hud-downed-banner')!;
-    this.combatBannerEl = this.root.querySelector('#hud-combat-banner')!;
-    this.debugOverlayEl = this.root.querySelector('#hud-debug-overlay')!;
-    this.aiLabelsContainer = this.root.querySelector('#ai-labels-container')!;
-    this.teammateLabelsContainer = this.root.querySelector(
-      '#teammate-labels-container'
+    this.mainMenuEl = this.container.querySelector('#main-menu')!;
+    this.pauseMenuEl = this.container.querySelector('#pause-menu')!;
+    this.settingsModalEl = this.container.querySelector('#settings-modal')!;
+    this.multiplayerModalEl =
+      this.container.querySelector('#multiplayer-modal')!;
+    this.resultScreenEl = this.container.querySelector('#result-screen')!;
+    this.hudEl = this.container.querySelector('#gameplay-hud')!;
+    this.pauseLeaveCoopBtn = this.container.querySelector(
+      '#btn-pause-leave-coop'
     )!;
-    this.pingMarkersContainer = this.root.querySelector(
-      '#ping-markers-container'
-    )!;
-
-    this.mainMenuEl = this.root.querySelector('#main-menu-screen')!;
-    this.multiplayerScreenEl = this.root.querySelector(
-      '#multiplayer-lobby-screen'
-    )!;
-    this.mpBrowserViewEl = this.root.querySelector('#mp-browser-view')!;
-    this.mpWaitingViewEl = this.root.querySelector('#mp-waiting-room-view')!;
-    this.mpErrorBannerEl = this.root.querySelector('#mp-error-banner')!;
-    this.mpPublicRoomsListEl = this.root.querySelector(
-      '#mp-public-rooms-list'
-    )!;
-    this.mpLobbyPlayersListEl = this.root.querySelector(
-      '#mp-lobby-players-list'
-    )!;
-    this.mpLobbyRoomCodeEl = this.root.querySelector('#mp-lobby-room-code')!;
-    this.mpLobbyTitleEl = this.root.querySelector('#mp-lobby-room-title')!;
-    this.mpStartMatchBtn = this.root.querySelector(
-      '#btn-mp-start-match'
-    ) as HTMLButtonElement;
-    this.mpToggleReadyBtn = this.root.querySelector(
-      '#btn-mp-toggle-ready'
-    ) as HTMLButtonElement;
-
-    this.pauseMenuEl = this.root.querySelector('#pause-menu-screen')!;
-    this.settingsModalEl = this.root.querySelector('#settings-modal-screen')!;
-    this.resultScreenEl = this.root.querySelector('#result-screen')!;
-    this.resultCoopBoardEl = this.root.querySelector(
-      '#result-coop-scoreboard'
-    )!;
-
-    this.bindMenuEvents();
   }
 
-  private getMpInputs(): {
-    serverUrl: string;
-    nickname: string;
-    roomName: string;
-    isPrivate: boolean;
-    roomCode: string;
-  } {
-    const serverUrl =
-      (
-        this.root.querySelector('#mp-server-url') as HTMLInputElement
-      )?.value.trim() || this.getDefaultServerUrl();
-    const nickname =
-      (
-        this.root.querySelector('#mp-nickname-input') as HTMLInputElement
-      )?.value.trim() || 'Scout';
-    const roomName =
-      (
-        this.root.querySelector('#mp-room-name-input') as HTMLInputElement
-      )?.value.trim() || 'Valkenburg Squad';
-    const isPrivate = Boolean(
-      (this.root.querySelector('#mp-private-checkbox') as HTMLInputElement)
-        ?.checked
-    );
-    const roomCode = (
-      (this.root.querySelector('#mp-room-code-input') as HTMLInputElement)
-        ?.value || ''
-    )
-      .trim()
-      .toUpperCase();
-    return { serverUrl, nickname, roomName, isPrivate, roomCode };
+  private renderProgressMarkup(progress: SaveProgress): string {
+    return `
+      <div class="record-item">
+        <span class="record-label">Best Score</span>
+        <strong class="record-val">${progress.highScore.toLocaleString()}</strong>
+      </div>
+      <div class="record-item">
+        <span class="record-label">Best Rank</span>
+        <strong class="record-val accent-gold">${progress.bestRank}</strong>
+      </div>
+      <div class="record-item">
+        <span class="record-label">Titans Slain</span>
+        <strong class="record-val">${progress.totalTitansSlain}</strong>
+      </div>
+      <div class="record-item">
+        <span class="record-label">Fastest Clear</span>
+        <strong class="record-val">${progress.fastestHuntSeconds !== null ? `${progress.fastestHuntSeconds}s` : '—'}</strong>
+      </div>
+    `;
   }
 
-  private bindMenuEvents(): void {
-    this.root
-      .querySelector('#btn-start-hunt')!
-      .addEventListener('click', () => {
-        this.showGameplayHUD();
+  private bindDOMEvents(): void {
+    this.container
+      .querySelector('#btn-start-training')
+      ?.addEventListener('click', () => {
+        this.showGameplayHUD(false);
+        this.callbacks.onStartGame('training');
+      });
+
+    this.container
+      .querySelector('#btn-start-hunt')
+      ?.addEventListener('click', () => {
+        this.showGameplayHUD(false);
         this.callbacks.onStartGame('hunt');
       });
 
-    this.root
-      .querySelector('#btn-open-multiplayer')!
-      .addEventListener('click', () => {
+    this.container
+      .querySelector('#btn-open-multiplayer')
+      ?.addEventListener('click', () => {
         this.showMultiplayerMenu();
         this.callbacks.onOpenMultiplayerMenu?.();
       });
 
-    this.root
-      .querySelector('#btn-start-training')!
-      .addEventListener('click', () => {
-        this.showGameplayHUD();
-        this.callbacks.onStartGame('training');
+    this.container
+      .querySelector('#btn-close-mp')
+      ?.addEventListener('click', () => {
+        this.multiplayerModalEl.classList.add('hidden');
+        this.mainMenuEl.classList.remove('hidden');
       });
 
-    this.root
-      .querySelector('#btn-open-settings')!
-      .addEventListener('click', () => {
-        this.settingsModalEl.classList.remove('hidden');
-      });
+    const getMpInputs = () => {
+      const nick =
+        (
+          this.container.querySelector('#mp-nickname-input') as HTMLInputElement
+        )?.value.trim() || 'Scout';
+      const serverUrl =
+        (
+          this.container.querySelector('#mp-server-url') as HTMLInputElement
+        )?.value.trim() || this.getDefaultServerUrl();
+      const roomName =
+        (
+          this.container.querySelector(
+            '#mp-room-name-input'
+          ) as HTMLInputElement
+        )?.value.trim() || 'Scout Squad';
+      const isPrivate = Boolean(
+        (
+          this.container.querySelector(
+            '#mp-private-checkbox'
+          ) as HTMLInputElement
+        )?.checked
+      );
+      const roomCode = (
+        (
+          this.container.querySelector(
+            '#mp-room-code-input'
+          ) as HTMLInputElement
+        )?.value || ''
+      )
+        .trim()
+        .toUpperCase();
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('aot_mp_nickname', nick);
+      }
+      return { nick, serverUrl, roomName, isPrivate, roomCode };
+    };
 
-    // Multiplayer Lobby Controls
-    this.root
-      .querySelector('#btn-mp-create-room')!
-      .addEventListener('click', () => {
-        const { serverUrl, nickname, roomName, isPrivate } = this.getMpInputs();
+    this.container
+      .querySelector('#btn-mp-create-room')
+      ?.addEventListener('click', () => {
+        const { nick, serverUrl, roomName, isPrivate } = getMpInputs();
         this.setMultiplayerError(null);
         this.callbacks.onCreateMultiplayerRoom?.({
-          serverUrl,
-          nickname,
+          nickname: nick,
           roomName,
           isPrivate,
+          serverUrl,
         });
       });
 
-    this.root
-      .querySelector('#btn-mp-join-code')!
-      .addEventListener('click', () => {
-        const { serverUrl, nickname, roomCode } = this.getMpInputs();
+    this.container
+      .querySelector('#btn-mp-join-code')
+      ?.addEventListener('click', () => {
+        const { nick, serverUrl, roomCode } = getMpInputs();
         if (!roomCode) {
           this.setMultiplayerError('Please enter a 6-character Room Code.');
           return;
         }
         this.setMultiplayerError(null);
         this.callbacks.onJoinMultiplayerByCode?.({
-          serverUrl,
-          nickname,
+          nickname: nick,
           roomCode,
+          serverUrl,
         });
       });
 
-    this.root
-      .querySelector('#btn-mp-refresh-rooms')!
-      .addEventListener('click', () => {
-        const { serverUrl } = this.getMpInputs();
+    this.container
+      .querySelector('#btn-mp-refresh-rooms')
+      ?.addEventListener('click', () => {
+        const { serverUrl } = getMpInputs();
         this.callbacks.onRefreshPublicRooms?.(serverUrl);
       });
 
-    this.root
-      .querySelector('#btn-mp-back-main')!
-      .addEventListener('click', () => {
-        this.showMainMenu();
+    this.container
+      .querySelector('#btn-mp-copy-code')
+      ?.addEventListener('click', () => {
+        const codeEl = this.container.querySelector('#mp-lobby-room-code');
+        const copyBtn = this.container.querySelector(
+          '#btn-mp-copy-code'
+        ) as HTMLButtonElement | null;
+        const code = codeEl?.textContent?.trim() || '';
+        if (!code || code === '------') return;
+        if (navigator.clipboard?.writeText) {
+          void navigator.clipboard.writeText(code);
+        }
+        if (copyBtn) {
+          const prev = copyBtn.textContent;
+          copyBtn.textContent = 'Copied!';
+          window.setTimeout(() => {
+            copyBtn.textContent = prev || 'Copy Code';
+          }, 1400);
+        }
       });
 
-    this.mpToggleReadyBtn.addEventListener('click', () => {
-      this.callbacks.onToggleReady?.();
-    });
+    this.container
+      .querySelector('#btn-mp-toggle-ready')
+      ?.addEventListener('click', () => {
+        this.callbacks.onToggleReady?.();
+      });
 
-    this.mpStartMatchBtn.addEventListener('click', () => {
-      this.callbacks.onStartMultiplayerMatch?.();
-    });
+    this.container
+      .querySelector('#btn-mp-start-match')
+      ?.addEventListener('click', () => {
+        this.callbacks.onStartMultiplayerMatch?.();
+      });
 
-    this.root
-      .querySelector('#btn-mp-leave-room')!
-      .addEventListener('click', () => {
+    this.container
+      .querySelector('#btn-mp-leave-room')
+      ?.addEventListener('click', () => {
         this.callbacks.onLeaveMultiplayerRoom?.();
       });
 
-    this.root
-      .querySelector('#btn-resume')!
-      .addEventListener('click', () => {
+    this.container
+      .querySelector('#btn-pause-leave-coop')
+      ?.addEventListener('click', () => {
         this.pauseMenuEl.classList.add('hidden');
-        this.callbacks.onResumeGame();
+        this.callbacks.onLeaveMultiplayerRoom?.();
       });
 
-    this.root
-      .querySelector('#btn-restart')!
-      .addEventListener('click', () => {
-        this.pauseMenuEl.classList.add('hidden');
-        this.resultScreenEl.classList.add('hidden');
-        this.callbacks.onRestartMission();
-      });
-
-    this.root
-      .querySelector('#btn-pause-settings')!
-      .addEventListener('click', () => {
+    this.container
+      .querySelector('#btn-open-settings')
+      ?.addEventListener('click', () => {
         this.settingsModalEl.classList.remove('hidden');
       });
 
-    this.root
-      .querySelector('#btn-pause-mainmenu')!
-      .addEventListener('click', () => {
-        this.showMainMenu();
-        this.callbacks.onReturnMainMenu();
+    this.container
+      .querySelector('#btn-pause-settings')
+      ?.addEventListener('click', () => {
+        this.settingsModalEl.classList.remove('hidden');
       });
 
-    this.root
-      .querySelector('#btn-result-retry')!
-      .addEventListener('click', () => {
-        this.resultScreenEl.classList.add('hidden');
+    this.container
+      .querySelector('#btn-close-settings')
+      ?.addEventListener('click', () => {
+        this.settingsModalEl.classList.add('hidden');
+      });
+
+    this.container
+      .querySelector('#btn-resume')
+      ?.addEventListener('click', () => {
+        this.setPaused(false);
+        this.callbacks.onResumeGame();
+      });
+
+    this.container
+      .querySelector('#btn-restart')
+      ?.addEventListener('click', () => {
+        this.setPaused(false);
         this.callbacks.onRestartMission();
       });
 
-    this.root
-      .querySelector('#btn-result-mainmenu')!
-      .addEventListener('click', () => {
+    this.container
+      .querySelector('#btn-pause-mainmenu')
+      ?.addEventListener('click', () => {
         this.showMainMenu();
         this.callbacks.onReturnMainMenu();
       });
 
-    this.root
-      .querySelector('#btn-close-settings')!
-      .addEventListener('click', () => {
-        this.readAndSaveSettings();
-        this.settingsModalEl.classList.add('hidden');
+    this.container
+      .querySelector('#btn-res-retry')
+      ?.addEventListener('click', () => {
+        this.resultScreenEl.classList.add('hidden');
+        this.hudEl.classList.remove('hidden');
+        this.callbacks.onRestartMission();
       });
-  }
 
-  private readAndSaveSettings(): void {
-    const sens = parseFloat(
-      (this.root.querySelector('#set-sensitivity') as HTMLInputElement).value
-    );
-    const camDist = parseFloat(
-      (this.root.querySelector('#set-camdist') as HTMLInputElement).value
-    );
-    const vol = parseFloat(
-      (this.root.querySelector('#set-volume') as HTMLInputElement).value
-    );
-    const quality = (
-      this.root.querySelector('#set-quality') as HTMLSelectElement
-    ).value as UserSettings['graphicsQuality'];
+    this.container
+      .querySelector('#btn-res-menu')
+      ?.addEventListener('click', () => {
+        this.showMainMenu();
+        this.callbacks.onReturnMainMenu();
+      });
 
-    const debug = {
-      showPerformanceOverlay: (
-        this.root.querySelector('#dbg-perf') as HTMLInputElement
-      ).checked,
-      showTitanHitboxes: (
-        this.root.querySelector('#dbg-hitboxes') as HTMLInputElement
-      ).checked,
-      showWeakPoints: (
-        this.root.querySelector('#dbg-weakpoints') as HTMLInputElement
-      ).checked,
-      showGrappleAnchors: (
-        this.root.querySelector('#dbg-anchors') as HTMLInputElement
-      ).checked,
-      showVelocityVectors: (
-        this.root.querySelector('#dbg-velocity') as HTMLInputElement
-      ).checked,
-      showAIStates: (
-        this.root.querySelector('#dbg-aistates') as HTMLInputElement
-      ).checked,
-      showColliders: (
-        this.root.querySelector('#dbg-colliders') as HTMLInputElement
-      ).checked,
+    // Settings Inputs
+    const sensInput = this.container.querySelector(
+      '#set-sens'
+    ) as HTMLInputElement;
+    sensInput.addEventListener('input', () => {
+      const val = parseFloat(sensInput.value);
+      this.container.querySelector('#val-sens')!.textContent = val.toFixed(2);
+      this.settings.mouseSensitivity = val;
+      this.callbacks.onSettingsChanged({ mouseSensitivity: val });
+    });
+
+    const camInput = this.container.querySelector(
+      '#set-camdist'
+    ) as HTMLInputElement;
+    camInput.addEventListener('input', () => {
+      const val = parseFloat(camInput.value);
+      this.container.querySelector('#val-camdist')!.textContent =
+        `${val.toFixed(1)}m`;
+      this.settings.cameraDistance = val;
+      this.callbacks.onSettingsChanged({ cameraDistance: val });
+    });
+
+    const tacticalKeySelect = this.container.querySelector(
+      '#set-tactical-key'
+    ) as HTMLSelectElement;
+    tacticalKeySelect.addEventListener('change', () => {
+      const mode = tacticalKeySelect.value as TacticalOverlayKeyMode;
+      this.settings.tacticalOverlayKey = mode;
+      this.callbacks.onSettingsChanged({ tacticalOverlayKey: mode });
+    });
+
+    const volInput = this.container.querySelector(
+      '#set-volume'
+    ) as HTMLInputElement;
+    volInput.addEventListener('input', () => {
+      const val = parseFloat(volInput.value);
+      this.container.querySelector('#val-volume')!.textContent =
+        `${Math.round(val * 100)}%`;
+      this.settings.masterVolume = val;
+      this.callbacks.onSettingsChanged({ masterVolume: val });
+    });
+
+    const qualSelect = this.container.querySelector(
+      '#set-quality'
+    ) as HTMLSelectElement;
+    qualSelect.addEventListener('change', () => {
+      const val = qualSelect.value as GraphicsQuality;
+      this.settings.graphicsQuality = val;
+      this.callbacks.onSettingsChanged({ graphicsQuality: val });
+    });
+
+    const bindDebugCheckbox = (
+      id: string,
+      key: keyof UserSettings['debug']
+    ) => {
+      const el = this.container.querySelector(`#${id}`) as HTMLInputElement;
+      el.addEventListener('change', () => {
+        this.settings.debug[key] = el.checked;
+        this.callbacks.onSettingsChanged({ debug: { ...this.settings.debug } });
+      });
     };
 
-    this.settings = {
-      mouseSensitivity: sens,
-      cameraDistance: camDist,
-      masterVolume: vol,
-      graphicsQuality: quality,
-      debug,
-    };
-
-    this.callbacks.onSettingsChanged(this.settings);
+    bindDebugCheckbox('dbg-colliders', 'showColliders');
+    bindDebugCheckbox('dbg-anchors', 'showGrappleAnchors');
+    bindDebugCheckbox('dbg-hitboxes', 'showTitanHitboxes');
+    bindDebugCheckbox('dbg-weakpoints', 'showWeakPoints');
+    bindDebugCheckbox('dbg-velocity', 'showVelocityVectors');
+    bindDebugCheckbox('dbg-aistates', 'showAIStates');
+    bindDebugCheckbox('dbg-perf', 'showPerformanceOverlay');
   }
 
-  public showMainMenu(updatedProgress?: SaveProgress): void {
-    if (updatedProgress) {
-      this.progress = updatedProgress;
-      this.root.querySelector('#menu-highscore')!.textContent = String(
-        this.progress.highScore
-      );
-      this.root.querySelector('#menu-bestrank')!.textContent =
-        this.progress.bestRank;
-      this.root.querySelector('#menu-totalslain')!.textContent = String(
-        this.progress.totalTitansSlain
-      );
-    }
-    this.hudRoot.classList.add('hidden');
-    this.multiplayerScreenEl.classList.add('hidden');
+  public showGameplayHUD(isCoop = false): void {
+    this.mainMenuEl.classList.add('hidden');
     this.pauseMenuEl.classList.add('hidden');
     this.resultScreenEl.classList.add('hidden');
+    this.multiplayerModalEl.classList.add('hidden');
+    this.hudEl.classList.remove('hidden');
+    this.pauseLeaveCoopBtn.classList.toggle('hidden', !isCoop);
+  }
+
+  public showMainMenu(progress?: SaveProgress): void {
+    this.hudEl.classList.add('hidden');
+    this.pauseMenuEl.classList.add('hidden');
+    this.resultScreenEl.classList.add('hidden');
+    this.multiplayerModalEl.classList.add('hidden');
     this.mainMenuEl.classList.remove('hidden');
+    if (progress) {
+      const statsEl = this.container.querySelector('#menu-progress-stats');
+      if (statsEl) {
+        statsEl.innerHTML = this.renderProgressMarkup(progress);
+      }
+    }
   }
 
   public showMultiplayerMenu(): void {
-    this.mainMenuEl.classList.add('hidden');
-    this.hudRoot.classList.add('hidden');
+    this.hudEl.classList.add('hidden');
     this.pauseMenuEl.classList.add('hidden');
     this.resultScreenEl.classList.add('hidden');
-    this.multiplayerScreenEl.classList.remove('hidden');
-    this.mpBrowserViewEl.classList.remove('hidden');
-    this.mpWaitingViewEl.classList.add('hidden');
-    this.setMultiplayerError(null);
+    this.multiplayerModalEl.classList.remove('hidden');
+    this.container
+      .querySelector('#mp-browser-section')
+      ?.classList.remove('hidden');
+    this.container
+      .querySelector('#mp-waiting-room-section')
+      ?.classList.add('hidden');
+    this.lastLobbySignature = '';
   }
 
   public showWaitingRoomLobby(): void {
-    this.mainMenuEl.classList.add('hidden');
-    this.hudRoot.classList.add('hidden');
-    this.multiplayerScreenEl.classList.remove('hidden');
-    this.mpBrowserViewEl.classList.add('hidden');
-    this.mpWaitingViewEl.classList.remove('hidden');
-    this.setMultiplayerError(null);
+    this.hudEl.classList.add('hidden');
+    this.pauseMenuEl.classList.add('hidden');
+    this.resultScreenEl.classList.add('hidden');
+    this.multiplayerModalEl.classList.remove('hidden');
+    this.container
+      .querySelector('#mp-browser-section')
+      ?.classList.add('hidden');
+    this.container
+      .querySelector('#mp-waiting-room-section')
+      ?.classList.remove('hidden');
+    this.pauseLeaveCoopBtn.classList.remove('hidden');
+  }
+
+  public updateLobbyState(snapshot: NetRoomState, myPlayerId: string): void {
+    this.updateMultiplayerLobby(snapshot, myPlayerId);
+  }
+
+  public recordQuickChatBubble(playerId: string, text: string): void {
+    this.worldMarkersController.recordQuickChatBubble(playerId, text);
   }
 
   public setMultiplayerError(message: string | null): void {
+    const errEl = this.container.querySelector(
+      '#mp-error-banner'
+    ) as HTMLElement | null;
+    if (!errEl) return;
     if (!message) {
-      this.mpErrorBannerEl.classList.add('hidden');
-      this.mpErrorBannerEl.textContent = '';
+      errEl.classList.add('hidden');
+      errEl.textContent = '';
     } else {
-      this.mpErrorBannerEl.classList.remove('hidden');
-      this.mpErrorBannerEl.textContent = message;
+      errEl.classList.remove('hidden');
+      errEl.textContent = message;
     }
   }
 
   public updatePublicRoomsList(rooms: PublicRoomSummary[]): void {
+    const listEl = this.container.querySelector(
+      '#mp-public-rooms-list'
+    ) as HTMLElement | null;
+    if (!listEl) return;
     if (rooms.length === 0) {
-      this.mpPublicRoomsListEl.innerHTML = `<div style="font-size: 12px; color: #94a3b8;">No public rooms currently open. Create one above!</div>`;
+      listEl.innerHTML = `<div class="empty-list-state">No open public squads found. Create a room to host!</div>`;
       return;
     }
 
-    this.mpPublicRoomsListEl.innerHTML = rooms
+    listEl.innerHTML = rooms
       .map(
         (r) => `
-        <div class="mp-room-item">
-          <div>
-            <strong style="color:#f8fafc;">${this.escapeHtml(r.roomName)}</strong>
-            <span style="color:#38d9c0;font-family:monospace;margin-left:8px;">[${r.roomCode}]</span>
-            <span style="color:#94a3b8;margin-left:8px;">${r.playerCount}/${r.maxPlayers} Scouts (${r.phase.toUpperCase()})</span>
+        <div class="public-room-row">
+          <div class="public-room-info">
+            <strong class="public-room-title">${this.escapeHtml(r.roomName)}</strong>
+            <span class="public-room-meta">Code <kbd>${this.escapeHtml(r.roomCode)}</kbd> · ${r.playerCount}/${r.maxPlayers} Scouts · ${r.phase.toUpperCase()}</span>
           </div>
-          <button class="btn-military btn-join-public-room" data-room-id="${r.roomId}" style="padding: 4px 12px; font-size: 11px;">
-            JOIN
-          </button>
+          <button class="btn-solid btn-sm btn-join-public-room" data-room-id="${this.escapeHtml(r.roomId)}">Join</button>
         </div>
       `
       )
       .join('');
 
-    this.mpPublicRoomsListEl
-      .querySelectorAll('.btn-join-public-room')
-      .forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const roomId = (btn as HTMLElement).getAttribute('data-room-id');
-          if (!roomId) return;
-          const { serverUrl, nickname } = this.getMpInputs();
-          this.callbacks.onJoinMultiplayerByRoomId?.({
-            serverUrl,
-            nickname,
-            roomId,
-          });
+    listEl.querySelectorAll('.btn-join-public-room').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const roomId = (btn as HTMLElement).getAttribute('data-room-id') || '';
+        const nick =
+          (
+            this.container.querySelector(
+              '#mp-nickname-input'
+            ) as HTMLInputElement
+          )?.value.trim() || 'Scout';
+        const serverUrl =
+          (
+            this.container.querySelector('#mp-server-url') as HTMLInputElement
+          )?.value.trim() || this.getDefaultServerUrl();
+        this.callbacks.onJoinMultiplayerByRoomId?.({
+          nickname: nick,
+          roomId,
+          serverUrl,
         });
       });
-  }
-
-  public updateLobbyState(
-    snapshot: NetRoomState,
-    localSessionId: string
-  ): void {
-    this.mpLobbyRoomCodeEl.textContent = snapshot.roomCode;
-    this.mpLobbyTitleEl.textContent = `${snapshot.roomName.toUpperCase()} (${!snapshot.isPublic ? 'PRIVATE' : 'PUBLIC'})`;
-
-    const players = Object.values(snapshot.players);
-    this.mpLobbyPlayersListEl.innerHTML = players
-      .map((p) => {
-        const isYou = p.id === localSessionId;
-        const readyClass = p.ready ? 'ready' : 'unready';
-        const readyLabel = p.ready ? 'READY' : 'NOT READY';
-        return `
-          <div class="mp-player-slot">
-            <div>
-              <strong style="font-size:14px;color:${isYou ? '#38d9c0' : '#f8fafc'};">
-                ${this.escapeHtml(p.nickname)} ${isYou ? '(YOU)' : ''}
-              </strong>
-              ${p.isLeader ? '<span class="mp-badge host">HOST LEADER</span>' : ''}
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;">
-              <span class="mp-badge ${readyClass}">${readyLabel}</span>
-            </div>
-          </div>
-        `;
-      })
-      .join('');
-
-    const localPlayer = snapshot.players[localSessionId];
-    const isLeader = Boolean(localPlayer?.isLeader);
-    this.mpStartMatchBtn.style.display = isLeader ? 'flex' : 'none';
-  }
-
-  public recordQuickChatBubble(sessionId: string, text: string): void {
-    this.quickChatBubbles.set(sessionId, {
-      text,
-      expiresAt: performance.now() + 4200,
     });
   }
 
-  public showGameplayHUD(): void {
-    this.mainMenuEl.classList.add('hidden');
-    this.multiplayerScreenEl.classList.add('hidden');
-    this.pauseMenuEl.classList.add('hidden');
-    this.resultScreenEl.classList.add('hidden');
-    this.hudRoot.classList.remove('hidden');
+  public updateMultiplayerLobby(
+    snapshot: NetRoomState | null,
+    myPlayerId: string
+  ): void {
+    const browserSec = this.container.querySelector(
+      '#mp-browser-section'
+    ) as HTMLElement | null;
+    const waitingSec = this.container.querySelector(
+      '#mp-waiting-room-section'
+    ) as HTMLElement | null;
+    if (!browserSec || !waitingSec) return;
+
+    if (!snapshot) {
+      browserSec.classList.remove('hidden');
+      waitingSec.classList.add('hidden');
+      this.lastLobbySignature = '';
+      return;
+    }
+
+    browserSec.classList.add('hidden');
+    waitingSec.classList.remove('hidden');
+
+    const players = Object.values(snapshot.players);
+    const sig = `${snapshot.roomCode}|${snapshot.leaderId}|${myPlayerId}|${players
+      .map((p) => `${p.id}:${p.nickname}:${p.ready}:${p.isLeader}`)
+      .join(',')}`;
+    if (this.lastLobbySignature === sig) return;
+    this.lastLobbySignature = sig;
+
+    const codeEl = this.container.querySelector('#mp-lobby-room-code');
+    if (codeEl) codeEl.textContent = snapshot.roomCode || '------';
+
+    const listEl = this.container.querySelector('#mp-lobby-players-list');
+    if (listEl) {
+      const slotsMarkup: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        const p = players[i];
+        if (p) {
+          const isMe = p.id === myPlayerId;
+          slotsMarkup.push(`
+            <div class="lobby-player-slot filled ${p.ready ? 'is-ready' : ''} ${isMe ? 'is-self' : ''}">
+              <div class="slot-header">
+                <span class="slot-index">Scout 0${i + 1}</span>
+                ${p.isLeader ? '<span class="slot-role-badge leader">Squad Leader</span>' : '<span class="slot-role-badge">Vanguard</span>'}
+              </div>
+              <div class="slot-player-name">
+                ${this.escapeHtml(p.nickname)}
+                ${isMe ? '<span class="slot-you-pill">You</span>' : ''}
+              </div>
+              <div class="slot-status-row">
+                <span class="slot-ready-pill ${p.ready ? 'ready' : 'standby'}">
+                  ${p.ready ? 'Ready for Launch' : 'Standing By'}
+                </span>
+              </div>
+            </div>
+          `);
+        } else {
+          slotsMarkup.push(`
+            <div class="lobby-player-slot empty">
+              <div class="slot-header">
+                <span class="slot-index">Slot 0${i + 1}</span>
+                <span class="slot-role-badge muted">Open</span>
+              </div>
+              <div class="slot-empty-label">Awaiting Scout...</div>
+              <div class="slot-status-row">
+                <span class="slot-ready-pill empty">Share Room Code to Invite</span>
+              </div>
+            </div>
+          `);
+        }
+      }
+      listEl.innerHTML = slotsMarkup.join('');
+    }
+
+    const me = snapshot.players[myPlayerId];
+    const readyBtn = this.container.querySelector(
+      '#btn-mp-toggle-ready'
+    ) as HTMLButtonElement | null;
+    if (readyBtn && me) {
+      readyBtn.textContent = me.ready ? 'Stand Down (Unready)' : 'Ready Up';
+      readyBtn.classList.toggle('primary', !me.ready);
+    }
+
+    const startBtn = this.container.querySelector(
+      '#btn-mp-start-match'
+    ) as HTMLButtonElement | null;
+    const statusEl = this.container.querySelector('#mp-lobby-status-text');
+    const allReady = players.length >= 1 && players.every((p) => p.ready);
+    const isLeader = snapshot.leaderId === myPlayerId;
+
+    if (startBtn) {
+      startBtn.disabled = !(isLeader && allReady);
+      startBtn.textContent = isLeader
+        ? 'Start Operation'
+        : 'Leader Starts Match';
+    }
+    if (statusEl) {
+      statusEl.textContent = allReady
+        ? isLeader
+          ? 'All Scouts Ready — Cleared to launch operation.'
+          : 'All Scouts Ready — Waiting for Squad Leader to launch.'
+        : 'Waiting for all squad members to mark Ready...';
+    }
   }
 
   public setPaused(paused: boolean): void {
@@ -996,72 +1166,79 @@ export class UIManager {
     status: MissionStatus,
     coopSnapshot?: NetRoomState | null
   ): void {
+    this.hudEl.classList.add('hidden');
     this.resultScreenEl.classList.remove('hidden');
-    const titleEl = this.root.querySelector('#result-title')!;
-    const subEl = this.root.querySelector('#result-sub')!;
-    const descEl = this.root.querySelector('#result-desc')!;
+
+    const titleEl = this.container.querySelector('#res-title')!;
+    const subEl = this.container.querySelector('#res-subtitle')!;
+    const rankEl = this.container.querySelector('#res-rank')!;
 
     if (status.completed) {
-      subEl.textContent = 'OPERATION SUCCESSFUL';
-      titleEl.textContent =
-        status.mode === 'training' ? 'TRAINING COMPLETE' : 'DISTRICT SECURED';
-      descEl.textContent =
+      titleEl.textContent = 'MISSION COMPLETE';
+      titleEl.className = 'result-headline victory';
+      subEl.textContent =
         status.mode === 'training'
-          ? 'You have mastered ODM pendulum swinging, gas propulsion, and Nape execution.'
-          : `All ${status.kills} hostile Titans in Valkenburg District have been eliminated.`;
+          ? 'ODM Gear & Combat qualification complete.'
+          : status.mode === 'coop'
+            ? 'Your Scout Squad defended the district!'
+            : 'All Titan waves eliminated. Humanity prevails.';
     } else {
-      subEl.textContent = 'VANGUARD FALLEN';
       titleEl.textContent = 'MISSION FAILED';
-      descEl.textContent =
-        'Your squad was overwhelmed in combat. Regroup and deploy again.';
+      titleEl.className = 'result-headline defeat';
+      subEl.textContent =
+        status.mode === 'coop'
+          ? 'All squad members fell in battle.'
+          : 'You were overwhelmed by the Titans.';
     }
 
-    this.root.querySelector('#result-score')!.textContent = String(status.score);
-    this.root.querySelector('#result-rank')!.textContent = status.completed
-      ? status.rank
-      : 'F';
-    this.root.querySelector('#result-time')!.textContent = this.formatTime(
-      status.elapsedSeconds
-    );
+    rankEl.textContent = status.rank;
+    this.container.querySelector('#res-score')!.textContent = Math.round(
+      status.score
+    ).toLocaleString();
+    this.container.querySelector('#res-time')!.textContent =
+      `${status.elapsedSeconds.toFixed(1)}s`;
+    this.container.querySelector('#res-kills')!.textContent =
+      `${status.kills} / ${status.targetKills}`;
 
-    if (coopSnapshot) {
-      this.resultCoopBoardEl.classList.remove('hidden');
-      const players = Object.values(coopSnapshot.players).sort(
-        (a, b) => b.score - a.score
-      );
-      this.resultCoopBoardEl.innerHTML = `
-        <div class="mp-section-title">CO-OP SQUAD PERFORMANCE LEDGER</div>
-        ${players
+    const coopWrap = this.container.querySelector(
+      '#res-coop-scoreboard-wrap'
+    ) as HTMLElement | null;
+    const coopBoard = this.container.querySelector(
+      '#res-coop-scoreboard'
+    ) as HTMLElement | null;
+
+    if (coopWrap && coopBoard) {
+      if (coopSnapshot && Object.keys(coopSnapshot.players).length > 0) {
+        coopWrap.classList.remove('hidden');
+        const sorted = Object.values(coopSnapshot.players).sort(
+          (a, b) => b.score - a.score
+        );
+        coopBoard.innerHTML = sorted
           .map(
-            (p) => `
-          <div class="mp-room-item">
-            <span><strong>${this.escapeHtml(p.nickname)}</strong></span>
-            <span style="font-family:monospace;color:#cbd5e1;">
-              KILLS: <strong style="color:#ff6466;">${p.kills}</strong> |
-              ASSISTS: <strong style="color:#38d9c0;">${p.assists}</strong> |
-              SCORE: <strong style="color:#c9a45c;">${p.score}</strong>
-            </span>
+            (p, idx) => `
+          <div class="result-scoreboard-row">
+            <span class="sb-rank">#${idx + 1}</span>
+            <strong class="sb-name">${this.escapeHtml(p.nickname)}</strong>
+            <span class="sb-stat">${p.kills} Kills</span>
+            <span class="sb-stat">${p.assists} Assists</span>
+            <span class="sb-stat">${Math.round(p.damageDealt)} Dmg</span>
+            <strong class="sb-score">${p.score.toLocaleString()} pts</strong>
           </div>
         `
           )
-          .join('')}
-      `;
-    } else {
-      this.resultCoopBoardEl.classList.add('hidden');
+          .join('');
+      } else {
+        coopWrap.classList.add('hidden');
+      }
     }
   }
 
   public showCombatBanner(text: string): void {
-    this.combatBannerEl.textContent = text;
-    this.combatBannerEl.style.opacity = '1';
-    this.bannerTimer = 1.65;
+    this.hudController.showCombatBanner(text);
   }
 
   public flashDamageVignette(): void {
-    this.damageVignetteEl.style.opacity = '1';
-    setTimeout(() => {
-      this.damageVignetteEl.style.opacity = '0';
-    }, 260);
+    this.hudController.flashDamageVignette();
   }
 
   public updateHUD(params: {
@@ -1082,6 +1259,7 @@ export class UIManager {
     remotePlayers?: RemotePlayerEntity[];
     pingMs?: number;
     reconnecting?: boolean;
+    tacticalOverlayHeld?: boolean;
   }): void {
     const {
       dt,
@@ -1099,356 +1277,74 @@ export class UIManager {
       coopSnapshot,
       localSessionId,
       remotePlayers,
-      pingMs = 0,
-      reconnecting = false,
+      pingMs,
+      reconnecting,
+      tacticalOverlayHeld = false,
     } = params;
 
-    if (this.bannerTimer > 0) {
-      this.bannerTimer = Math.max(0, this.bannerTimer - dt);
-      if (this.bannerTimer <= 0) {
-        this.combatBannerEl.style.opacity = '0';
-      }
-    }
+    const tacticalKeyMode = this.settings.tacticalOverlayKey || 'KeyH';
 
-    // 1. Mission & Score
-    this.missionTitleEl.textContent = missionStatus.title;
-    this.missionObjEl.textContent = missionStatus.objectiveText;
-    this.missionSubEl.textContent = missionStatus.subText;
-    this.killsValEl.textContent = `${missionStatus.kills}/${missionStatus.targetKills}`;
-    this.scoreValEl.textContent = String(missionStatus.score);
-    this.timerValEl.textContent = this.formatTime(missionStatus.elapsedSeconds);
+    this.hudController.update({
+      dt,
+      player,
+      odm,
+      combat,
+      missionStatus,
+      reticlePreview,
+      nearSupplyDepot,
+      coopSnapshot,
+      localSessionId,
+      pingMs,
+      reconnecting,
+      tacticalKeyMode,
+    });
 
-    if (combat.comboCount > 1) {
-      this.comboBadgeEl.classList.remove('hidden');
-      this.comboBadgeEl.textContent = `${combat.comboCount}x COMBO`;
-    } else {
-      this.comboBadgeEl.classList.add('hidden');
-    }
-
-    // 2. Player Bars (HP, Gas, Blades, Speed)
-    const hpPct = Math.round((player.health / player.maxHealth) * 100);
-    this.hpBarEl.style.width = `${hpPct}%`;
-    this.hpTextEl.textContent = `${hpPct}%`;
-
-    const gasPct = Math.round((player.gas / player.maxGas) * 100);
-    this.gasBarEl.style.width = `${gasPct}%`;
-    this.gasTextEl.textContent = `${gasPct}%`;
-
-    const bladePct = Math.round(
-      (player.bladeDurability / player.maxBladeDurability) * 100
+    this.worldMarkersController.updateTargetLock(combat, camera);
+    this.worldMarkersController.updateCoopMarkers(
+      coopSnapshot,
+      localSessionId,
+      remotePlayers,
+      player.position,
+      camera
     );
-    this.bladeBarEl.style.width = `${bladePct}%`;
-    this.bladeTextEl.textContent = `${bladePct}% (${player.spareBlades} SPARE)`;
+    this.worldMarkersController.updateDebugTitanLabels(
+      this.settings.debug.showAIStates,
+      titans,
+      camera
+    );
 
-    let pipsHtml = '';
-    for (let i = 0; i < player.maxSpareBlades; i++) {
-      pipsHtml += `<div class="blade-pip ${i < player.spareBlades ? 'active' : ''}"></div>`;
-    }
-    this.bladePipsEl.innerHTML = pipsHtml;
-
-    this.spearTextEl.textContent = `${player.thunderSpears}/${player.maxThunderSpears} ${
-      player.thunderSpears > 0 ? 'READY' : 'EMPTY (RESUPPLY [R])'
-    }`;
-    let spearPipsHtml = '';
-    for (let i = 0; i < player.maxThunderSpears; i++) {
-      const isAvail = i < player.thunderSpears;
-      spearPipsHtml += `<div class="blade-pip ${isAvail ? 'active' : ''}" style="${
-        isAvail ? 'background:#f59e0b;box-shadow:0 0 6px #fbbf24;' : ''
-      }"></div>`;
-    }
-    this.spearPipsEl.innerHTML = spearPipsHtml;
-
-    const speed = player.velocity.length();
-    this.speedTextEl.textContent = `${speed.toFixed(1)} m/s`;
-
-    // Radial speed lines overlay when flying fast
-    const speedOverlayAlpha = Math.max(0, Math.min(0.85, (speed - 19) / 28));
-    this.speedLinesEl.style.opacity = String(speedOverlayAlpha);
-
-    // 3. Crosshair & Grapple Range Brackets
-    this.crosshairRingEl.classList.toggle('in-range', reticlePreview.canGrapple);
-    this.crosshairRingEl.classList.toggle('locked', combat.lockedTitan !== null);
-
-    this.leftBracketEl.classList.toggle('ready', reticlePreview.canGrapple);
-    this.leftBracketEl.classList.toggle('active', odm.leftHook.active);
-    this.rightBracketEl.classList.toggle('ready', reticlePreview.canGrapple);
-    this.rightBracketEl.classList.toggle('active', odm.rightHook.active);
-
-    // 4. Contextual Resupply / Blade Reload / Grab Escape Prompt
-    if (player.grabbedByTitanId) {
-      const escPct = Math.round(player.grabEscapeProgress * 100);
-      this.centerPromptEl.classList.remove('hidden');
-      this.centerPromptEl.textContent = `GRABBED BY TITAN! MASH [F] / [SPACE] OR FIRE [V] TO SEVER HAND (${escPct}%)`;
-    } else if (nearSupplyDepot) {
-      this.centerPromptEl.classList.remove('hidden');
-      this.centerPromptEl.textContent =
-        '[R] RESUPPLY GAS, BLADES, THUNDER SPEARS & MEDICAL KIT';
-    } else if (player.bladeDurability <= 0 && player.spareBlades > 0) {
-      this.centerPromptEl.classList.remove('hidden');
-      this.centerPromptEl.textContent =
-        '[R] BLADES DULL — PRESS R TO EQUIP FRESH BLADES';
-    } else {
-      this.centerPromptEl.classList.add('hidden');
-    }
-
-    // 5. 3D Projected Target Lock & Weak-Point Indicator
-    const targetTitan =
-      combat.lockedTitan && !combat.lockedTitan.isDead()
-        ? combat.lockedTitan
-        : this.findClosestAliveTitan(player.position, titans);
-
-    if (targetTitan) {
-      const zone = combat.lockedTitan ? combat.lockedZone : 'Nape';
-      const hb = targetTitan.hurtboxes[zone];
-      const screen = this.projectToScreen(hb.worldPosition, camera);
-      if (screen.visible) {
-        this.targetMarkerEl.classList.remove('hidden');
-        this.targetMarkerEl.style.left = `${screen.x}px`;
-        this.targetMarkerEl.style.top = `${screen.y}px`;
-        const hpRatio = Math.round((hb.hp / hb.maxHp) * 100);
-        const lockPrefix = combat.lockedTitan ? '[LOCKED] ' : '';
-        this.targetLabelEl.textContent = `${lockPrefix}${zone.toUpperCase()} (${hpRatio}%)`;
-      } else {
-        this.targetMarkerEl.classList.add('hidden');
-      }
-    } else {
-      this.targetMarkerEl.classList.add('hidden');
-    }
-
-    // 6. Co-op Squad Panel, Overhead Teammate Markers, Ping Markers & Downed Banner
-    if (coopSnapshot) {
-      this.netStatusEl.classList.remove('hidden');
-      this.netStatusEl.textContent = `ROOM: ${coopSnapshot.roomCode} | PING: ${pingMs}ms | ${
-        reconnecting ? 'RECONNECTING...' : 'ONLINE'
-      }`;
-      this.netStatusEl.style.borderColor = reconnecting ? '#ef4444' : '#38d9c0';
-
-      this.squadPanelEl.classList.remove('hidden');
-      const allPlayers = Object.values(coopSnapshot.players);
-      this.squadPanelEl.innerHTML = allPlayers
-        .map((p) => {
-          const isYou = p.id === localSessionId;
-          const dist = isYou
-            ? 0
-            : Math.round(
-                Math.hypot(
-                  p.position[0] - player.position.x,
-                  p.position[1] - player.position.y,
-                  p.position[2] - player.position.z
-                )
-              );
-          const hpPercent = Math.round(
-            (p.health / Math.max(1, p.maxHealth)) * 100
-          );
-          return `
-            <div class="squad-member-row">
-              <div class="squad-member-top">
-                <span style="color:${isYou ? '#38d9c0' : '#f8fafc'};">
-                  ${this.escapeHtml(p.nickname)} ${isYou ? '(YOU)' : `[${dist}m]`}
-                </span>
-                <span class="squad-life-badge ${p.lifeState}">
-                  ${p.lifeState.toUpperCase()}
-                </span>
-              </div>
-              <div class="bar-track" style="height:6px;">
-                <div class="bar-fill hp" style="width:${hpPercent}%;background:${
-            p.lifeState === 'downed' ? '#f59e0b' : '#22c55e'
-          };"></div>
-              </div>
-              <div style="display:flex;justify-content:space-between;font-size:10px;color:#94a3b8;font-family:monospace;">
-                <span>K:${p.kills} A:${p.assists}</span>
-                <span>PTS:${p.score}</span>
-              </div>
-            </div>
-          `;
-        })
-        .join('');
-
-      // Local player Downed / Reviving Banner
-      const localNet = localSessionId
-        ? coopSnapshot.players[localSessionId]
-        : undefined;
-      if (localNet?.lifeState === 'downed') {
-        this.downedBannerEl.classList.remove('hidden');
-        const revPct = Math.round(localNet.reviveProgress * 100);
-        this.downedBannerEl.textContent =
-          revPct > 0
-            ? `ALLY REVIVING YOU (${revPct}%) — HOLD POSITION!`
-            : `CRITICAL INJURY — BLEEDING OUT (${Math.ceil(
-                localNet.downedTimer
-              )}s) — WAIT FOR SQUAD REVIVE!`;
-      } else if (localNet?.lifeState === 'dead') {
-        this.downedBannerEl.classList.remove('hidden');
-        this.downedBannerEl.textContent =
-          'VANGUARD FALLEN — SPECTATING SQUAD (RESPAWN NEXT WAVE)';
-      } else {
-        // Check if local player is near a downed teammate
-        const downedAlly = allPlayers.find(
-          (p) =>
-            p.id !== localSessionId &&
-            p.lifeState === 'downed' &&
-            Math.hypot(
-              p.position[0] - player.position.x,
-              p.position[1] - player.position.y,
-              p.position[2] - player.position.z
-            ) <= 6.0
-        );
-        if (downedAlly) {
-          this.downedBannerEl.classList.remove('hidden');
-          const revPct = Math.round(downedAlly.reviveProgress * 100);
-          this.downedBannerEl.textContent = `[HOLD E] REVIVE ${downedAlly.nickname.toUpperCase()} (${revPct}%)`;
-        } else {
-          this.downedBannerEl.classList.add('hidden');
-        }
-      }
-
-      // 3D Projected Overhead Teammate Markers
-      const nowMs = performance.now();
-      let tmHtml = '';
-      if (remotePlayers) {
-        for (const rp of remotePlayers) {
-          const headWorld = rp.currentPosition
-            .clone()
-            .add(new THREE.Vector3(0, 2.25, 0));
-          const proj = this.projectToScreen(headWorld, camera);
-          if (!proj.visible) continue;
-          const dist = Math.round(
-            rp.currentPosition.distanceTo(player.position)
-          );
-          const s = rp.latestState;
-          const hpPctRemote = Math.round(
-            (s.health / Math.max(1, s.maxHealth)) * 100
-          );
-          const chat = this.quickChatBubbles.get(rp.id);
-          const chatHtml =
-            chat && chat.expiresAt > nowMs
-              ? `<div class="teammate-chat-bubble">${this.escapeHtml(chat.text)}</div>`
-              : '';
-          const downedTag =
-            s.lifeState === 'downed'
-              ? `[DOWNED - HOLD E (${Math.round(s.reviveProgress * 100)}%)]`
-              : `${dist}m`;
-
-          tmHtml += `
-            <div class="teammate-marker" style="left:${proj.x}px;top:${proj.y}px;">
-              ${chatHtml}
-              <div class="teammate-name-tag ${s.lifeState === 'downed' ? 'downed' : ''}">
-                ${this.escapeHtml(rp.nickname)} · ${downedTag}
-              </div>
-              <div class="teammate-mini-hp">
-                <div class="teammate-mini-hp-fill" style="width:${
-                  s.lifeState === 'downed'
-                    ? Math.round(s.reviveProgress * 100)
-                    : hpPctRemote
-                }%;background:${
-            s.lifeState === 'downed' ? '#f59e0b' : '#22c55e'
-          };"></div>
-              </div>
-            </div>
-          `;
-        }
-      }
-      this.teammateLabelsContainer.innerHTML = tmHtml;
-
-      // 3D Projected Team Pings
-      let pingHtml = '';
-      for (const ping of coopSnapshot.pings) {
-        const proj = this.projectToScreen(
-          new THREE.Vector3(...ping.position),
-          camera
-        );
-        if (proj.visible) {
-          pingHtml += `
-            <div class="ping-world-marker" style="left:${proj.x}px;top:${proj.y}px;">
-              &#9888; ${this.escapeHtml(ping.senderName)}: ${this.escapeHtml(ping.message)}
-            </div>
-          `;
-        }
-      }
-      this.pingMarkersContainer.innerHTML = pingHtml;
-    } else {
-      this.netStatusEl.classList.add('hidden');
-      this.squadPanelEl.classList.add('hidden');
-      this.downedBannerEl.classList.add('hidden');
-      this.teammateLabelsContainer.innerHTML = '';
-      this.pingMarkersContainer.innerHTML = '';
-    }
-
-    // 7. Optional AI State World Labels (Debug option)
-    if (this.settings.debug.showAIStates) {
-      let labelsHtml = '';
-      for (const t of titans) {
-        if (t.isDead()) continue;
-        const headPos = t.position
-          .clone()
-          .add(new THREE.Vector3(0, t.heightMeters + 1.2, 0));
-        const proj = this.projectToScreen(headPos, camera);
-        if (proj.visible) {
-          labelsHtml += `<div class="world-marker" style="left:${proj.x}px;top:${proj.y}px;background:rgba(0,0,0,0.8);padding:2px 6px;border:1px solid #38d9c0;font-size:10px;font-family:monospace;">${t.variant.toUpperCase()} [${t.aiState}] Nape:${t.hurtboxes.Nape.hp}</div>`;
-        }
-      }
-      this.aiLabelsContainer.innerHTML = labelsHtml;
-    } else {
-      this.aiLabelsContainer.innerHTML = '';
-    }
-
-    // 8. Debug Performance Overlay
-    if (this.settings.debug.showPerformanceOverlay) {
-      this.debugOverlayEl.classList.remove('hidden');
-      this.debugOverlayEl.innerHTML = `
-        FPS: ${Math.round(fps)} | Draw Calls: ${drawCalls} | Tris: ${triangles} ${
-        coopSnapshot ? `| Ping: ${pingMs}ms` : ''
-      }<br/>
-        Pos: (${player.position.x.toFixed(1)}, ${player.position.y.toFixed(1)}, ${player.position.z.toFixed(1)}) | Grounded: ${player.grounded}<br/>
-        Hooks: L=${odm.leftHook.active ? (odm.leftHook.isTaut ? 'TAUT' : 'SLACK') : 'OFF'} R=${odm.rightHook.active ? (odm.rightHook.isTaut ? 'TAUT' : 'SLACK') : 'OFF'} | Anim: ${player.animator.getCurrentAnimation()}
-      `;
-    } else {
-      this.debugOverlayEl.classList.add('hidden');
-    }
+    this.tacticalOverlayController.update({
+      held: tacticalOverlayHeld,
+      keyMode: tacticalKeyMode,
+      missionStatus,
+      coopSnapshot,
+      localSessionId,
+      player,
+      odm,
+      combat,
+      fps,
+      drawCalls,
+      triangles,
+      pingMs,
+      reconnecting,
+      showPerformanceOverlay: this.settings.debug.showPerformanceOverlay,
+    });
   }
 
-  private findClosestAliveTitan(
-    playerPos: THREE.Vector3,
-    titans: TitanEntity[]
-  ): TitanEntity | null {
-    let best: TitanEntity | null = null;
-    let bestDist = 85;
-    for (const t of titans) {
-      if (t.isDead()) continue;
-      const d = t.position.distanceTo(playerPos);
-      if (d < bestDist) {
-        bestDist = d;
-        best = t;
+  private escapeHtml(raw: string): string {
+    return raw.replace(/[&<>"']/g, (ch) => {
+      switch (ch) {
+        case '&':
+          return '&amp;';
+        case '<':
+          return '&lt;';
+        case '>':
+          return '&gt;';
+        case '"':
+          return '&quot;';
+        default:
+          return '&#39;';
       }
-    }
-    return best;
-  }
-
-  private projectToScreen(
-    worldPos: THREE.Vector3,
-    camera: THREE.PerspectiveCamera
-  ): { x: number; y: number; visible: boolean } {
-    const v = worldPos.clone().project(camera);
-    if (v.z > 1.0 || v.z < -1.0) {
-      return { x: 0, y: 0, visible: false };
-    }
-    const x = (v.x * 0.5 + 0.5) * window.innerWidth;
-    const y = (-(v.y * 0.5) + 0.5) * window.innerHeight;
-    return { x, y, visible: true };
-  }
-
-  private formatTime(sec: number): string {
-    const total = Math.max(0, Math.floor(sec));
-    const m = Math.floor(total / 60);
-    const s = total % 60;
-    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  }
-
-  private escapeHtml(str: string): string {
-    return str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+    });
   }
 }

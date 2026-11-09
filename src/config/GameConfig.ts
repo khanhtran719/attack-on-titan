@@ -1,4 +1,5 @@
 export type GraphicsQuality = 'low' | 'medium' | 'high';
+export type TacticalOverlayKeyMode = 'KeyH' | 'Tab';
 
 export interface DebugOptions {
   showColliders: boolean;
@@ -15,6 +16,7 @@ export interface UserSettings {
   cameraDistance: number;
   graphicsQuality: GraphicsQuality;
   masterVolume: number;
+  tacticalOverlayKey?: TacticalOverlayKeyMode;
   debug: DebugOptions;
 }
 
@@ -23,6 +25,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   cameraDistance: 5.8,
   graphicsQuality: 'high',
   masterVolume: 0.7,
+  tacticalOverlayKey: 'KeyH',
   debug: {
     showColliders: false,
     showGrappleAnchors: false,
@@ -30,7 +33,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
     showWeakPoints: false,
     showVelocityVectors: false,
     showAIStates: false,
-    showPerformanceOverlay: true,
+    showPerformanceOverlay: false,
   },
 };
 

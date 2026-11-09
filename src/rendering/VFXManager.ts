@@ -29,8 +29,21 @@ export class VFXManager {
   private particlePool: ObjectPool<ParticleItem>;
   private slashArcPool: ObjectPool<SlashArcItem>;
   private activeSpears: ThunderSpearProjectileItem[] = [];
+  private spearShaftGeo: THREE.CylinderGeometry;
+  private spearShaftMat: THREE.MeshBasicMaterial;
+  private spearFlameGeo: THREE.ConeGeometry;
+  private spearFlameMat: THREE.MeshBasicMaterial;
 
   constructor(private scene: THREE.Scene) {
+    this.spearShaftGeo = new THREE.CylinderGeometry(0.06, 0.08, 1.4, 8);
+    this.spearShaftGeo.rotateX(Math.PI / 2);
+    this.spearShaftMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 });
+
+    this.spearFlameGeo = new THREE.ConeGeometry(0.16, 0.55, 8);
+    this.spearFlameGeo.rotateX(-Math.PI / 2);
+    this.spearFlameGeo.translate(0, 0, -0.85);
+    this.spearFlameMat = new THREE.MeshBasicMaterial({ color: 0xf97316 });
+
     const sphereGeo = new THREE.IcosahedronGeometry(0.22, 1);
 
     this.particlePool = new ObjectPool<ParticleItem>(
@@ -142,17 +155,10 @@ export class VFXManager {
     onDetonate?: () => void
   ): void {
     const group = new THREE.Group();
-    const shaftGeo = new THREE.CylinderGeometry(0.06, 0.08, 1.4, 8);
-    shaftGeo.rotateX(Math.PI / 2);
-    const shaftMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 });
-    const shaft = new THREE.Mesh(shaftGeo, shaftMat);
+    const shaft = new THREE.Mesh(this.spearShaftGeo, this.spearShaftMat);
     group.add(shaft);
 
-    const flameGeo = new THREE.ConeGeometry(0.16, 0.55, 8);
-    flameGeo.rotateX(-Math.PI / 2);
-    flameGeo.translate(0, 0, -0.85);
-    const flameMat = new THREE.MeshBasicMaterial({ color: 0xf97316 });
-    const flame = new THREE.Mesh(flameGeo, flameMat);
+    const flame = new THREE.Mesh(this.spearFlameGeo, this.spearFlameMat);
     group.add(flame);
 
     group.position.copy(origin);

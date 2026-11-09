@@ -238,3 +238,246 @@ export function isValidFiniteVec3(v: unknown): v is [number, number, number] {
     Number.isFinite(v[2])
   );
 }
+
+export function isValidBoundedVec3(
+  v: unknown,
+  maxAbsCoord = 2500
+): v is [number, number, number] {
+  return (
+    isValidFiniteVec3(v) &&
+    Math.abs(v[0]) <= maxAbsCoord &&
+    Math.abs(v[1]) <= maxAbsCoord &&
+    Math.abs(v[2]) <= maxAbsCoord
+  );
+}
+
+export const VALID_TITAN_ZONES: ReadonlySet<TitanZoneType> = new Set<TitanZoneType>([
+  'Nape',
+  'Head',
+  'LeftArm',
+  'RightArm',
+  'LeftLeg',
+  'RightLeg',
+]);
+
+export const VALID_GRAPPLE_ACTIONS: ReadonlySet<
+  C2S_InputFrame['leftGrappleAction']
+> = new Set(['none', 'fire', 'hold', 'release']);
+
+export function isValidTitanZone(z: unknown): z is TitanZoneType {
+  return typeof z === 'string' && VALID_TITAN_ZONES.has(z as TitanZoneType);
+}
+
+/**
+ * Validates and sanitizes an untrusted C2S_InputFrame from a client.
+ * Rejects malformed payloads, NaN/Infinity fields, non-monotonic sequences, or out-of-bounds vectors.
+ */
+export function validateAndSanitizeInputFrame(
+  raw: unknown,
+  lastReceivedSeq: number
+): C2S_InputFrame | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const f = raw as Record<string, unknown>;
+
+  if (
+    typeof f.seq !== 'number' ||
+    !Number.isInteger(f.seq) ||
+    f.seq <= lastReceivedSeq ||
+    f.seq > lastReceivedSeq + 100000
+  ) {
+    return null;
+  }
+
+  if (
+    (f.dt !== undefined && (typeof f.dt !== 'number' || !Number.isFinite(f.dt))) ||
+    (f.clientTimeMs !== undefined &&
+      (typeof f.clientTimeMs !== 'number' || !Number.isFinite(f.clientTimeMs))) ||
+    typeof f.moveForward !== 'number' ||
+    !Number.isFinite(f.moveForward) ||
+    typeof f.moveRight !== 'number' ||
+    !Number.isFinite(f.moveRight) ||
+    typeof f.yaw !== 'number' ||
+    !Number.isFinite(f.yaw) ||
+    typeof f.pitch !== 'number' ||
+    !Number.isFinite(f.pitch)
+  ) {
+    return null;
+  }
+
+  if (
+    !isValidBoundedVec3(f.camOrigin, 2500) ||
+    !isValidBoundedVec3(f.camForward, 100) ||
+    !isValidBoundedVec3(f.camRight, 100)
+  ) {
+    return null;
+  }
+
+  const fwdLen = Math.hypot(f.camForward[0], f.camForward[1], f.camForward[2]);
+  if (fwdLen < 0.01) return null;
+
+  if (
+    typeof f.leftGrappleAction !== 'string' ||
+    !VALID_GRAPPLE_ACTIONS.has(
+      f.leftGrappleAction as C2S_InputFrame['leftGrappleAction']
+    ) ||
+    typeof f.rightGrappleAction !== 'string' ||
+    !VALID_GRAPPLE_ACTIONS.has(
+      f.rightGrappleAction as C2S_InputFrame['rightGrappleAction']
+    )
+  ) {
+    return null;
+  }
+
+  if (
+    f.leftGrappleTarget !== undefined &&
+    f.leftGrappleTarget !== null &&
+    !isValidBoundedVec3(f.leftGrappleTarget, 2500)
+  ) {
+    return null;
+  }
+
+  if (
+    f.rightGrappleTarget !== undefined &&
+    f.rightGrappleTarget !== null &&
+    !isValidBoundedVec3(f.rightGrappleTarget, 2500)
+  ) {
+    return null;
+  }
+
+  if (
+    f.lockedTitanId !== null &&
+    f.lockedTitanId !== undefined &&
+    (typeof f.lockedTitanId !== 'string' || f.lockedTitanId.length > 64)
+  ) {
+    return null;
+  }
+
+  const lockedZone: TitanZoneType = isValidTitanZone(f.lockedZone)
+    ? f.lockedZone
+    : 'Nape';
+
+  const clampNum = (v: number, min: number, max: number) =>
+    Math.max(min, Math.min(max, v));
+
+  return {
+    seq: f.seq,
+    clientTimeMs:
+      typeof f.clientTimeMs === 'number' ? f.clientTimeMs : Date.now(),
+    dt: typeof f.dt === 'number' ? clampNum(f.dt, 0.004, 0.05) : 1 / 60,
+    moveForward: clampNum(f.moveForward, -1, 1),
+    moveRight: clampNum(f.moveRight, -1, 1),
+    jumpPressed: Boolean(f.jumpPressed),
+    boostHeld: Boolean(f.boostHeld),
+    dodgePressed: Boolean(f.dodgePressed),
+    resupplyPressed: Boolean(f.resupplyPressed),
+    reviveHeld: Boolean(f.reviveHeld),
+    yaw: ((f.yaw % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) - Math.PI,
+    pitch: clampNum(f.pitch, -Math.PI * 0.49, Math.PI * 0.49),
+    camOrigin: [f.camOrigin[0], f.camOrigin[1], f.camOrigin[2]],
+    camForward: [
+      f.camForward[0] / fwdLen,
+      f.camForward[1] / fwdLen,
+      f.camForward[2] / fwdLen,
+    ],
+    camRight: [f.camRight[0], f.camRight[1], f.camRight[2]],
+    leftGrappleAction:
+      f.leftGrappleAction as C2S_InputFrame['leftGrappleAction'],
+    rightGrappleAction:
+      f.rightGrappleAction as C2S_InputFrame['rightGrappleAction'],
+    leftGrappleTarget: isValidBoundedVec3(f.leftGrappleTarget, 2500)
+      ? [
+          f.leftGrappleTarget[0],
+          f.leftGrappleTarget[1],
+          f.leftGrappleTarget[2],
+        ]
+      : null,
+    rightGrappleTarget: isValidBoundedVec3(f.rightGrappleTarget, 2500)
+      ? [
+          f.rightGrappleTarget[0],
+          f.rightGrappleTarget[1],
+          f.rightGrappleTarget[2],
+        ]
+      : null,
+    lockedTitanId:
+      typeof f.lockedTitanId === 'string' ? f.lockedTitanId : null,
+    lockedZone,
+    escapePressed: Boolean(f.escapePressed),
+  };
+}
+
+/**
+ * Validates and sanitizes an untrusted C2S_AttackIntent from a client.
+ * Enforces strictly increasing attack sequence numbers and valid vectors/zones.
+ */
+export function validateAttackIntent(
+  raw: unknown,
+  lastAttackSeq: number
+): C2S_AttackIntent | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const a = raw as Record<string, unknown>;
+
+  if (
+    typeof a.seq !== 'number' ||
+    !Number.isInteger(a.seq) ||
+    a.seq <= lastAttackSeq ||
+    a.seq > lastAttackSeq + 100000
+  ) {
+    return null;
+  }
+
+  if (typeof a.aimYaw !== 'number' || !Number.isFinite(a.aimYaw)) {
+    return null;
+  }
+
+  if (
+    a.weaponType !== undefined &&
+    a.weaponType !== 'blade' &&
+    a.weaponType !== 'thunder_spear'
+  ) {
+    return null;
+  }
+
+  if (
+    a.targetTitanId !== null &&
+    a.targetTitanId !== undefined &&
+    (typeof a.targetTitanId !== 'string' || a.targetTitanId.length > 64)
+  ) {
+    return null;
+  }
+
+  if (a.targetZone !== undefined && !isValidTitanZone(a.targetZone)) {
+    return null;
+  }
+
+  let aimOrigin: [number, number, number] | undefined;
+  if (a.aimOrigin !== undefined) {
+    if (!isValidBoundedVec3(a.aimOrigin, 2500)) return null;
+    aimOrigin = [a.aimOrigin[0], a.aimOrigin[1], a.aimOrigin[2]];
+  }
+
+  let aimDir: [number, number, number] | undefined;
+  if (a.aimDir !== undefined) {
+    if (!isValidBoundedVec3(a.aimDir, 100)) return null;
+    const len = Math.hypot(a.aimDir[0], a.aimDir[1], a.aimDir[2]);
+    if (len < 0.01) return null;
+    aimDir = [a.aimDir[0] / len, a.aimDir[1] / len, a.aimDir[2] / len];
+  }
+
+  const rtt =
+    typeof a.clientRttMs === 'number' && Number.isFinite(a.clientRttMs)
+      ? Math.max(0, Math.min(1000, a.clientRttMs))
+      : 0;
+
+  return {
+    seq: a.seq,
+    isHeavy: Boolean(a.isHeavy),
+    weaponType: a.weaponType ?? 'blade',
+    aimYaw: a.aimYaw,
+    aimOrigin,
+    aimDir,
+    targetTitanId:
+      typeof a.targetTitanId === 'string' ? a.targetTitanId : null,
+    targetZone: isValidTitanZone(a.targetZone) ? a.targetZone : 'Nape',
+    clientRttMs: rtt,
+  };
+}

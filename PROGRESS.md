@@ -1,6 +1,6 @@
 # TITAN HUNTER 3D — PROJECT PROGRESS REPORT
 
-## 1. Completed Milestones (Vertical Slice — Phases 1 to 7)
+## 1. Completed Milestones (Vertical Slice — Phases 1 to 8)
 
 ### Phase 1 — Playable Movement & 3D World (`COMPLETED`)
 - [x] **Project Architecture:** Vite + TypeScript + Three.js + Rapier 3D (`@dimforge/rapier3d-compat`) + Vitest setup with fixed-timestep physics (`60 Hz`) and decoupled render loop.
@@ -62,13 +62,45 @@
 - [x] **Production Docker & Reverse Proxy (`Dockerfile.client`, `Dockerfile.server`, `docker/nginx.conf`):**
   - Standalone client & server production images (`npm run docker:build:prod`) with Nginx reverse-proxying `/api/`, `/matchmake/`, and Colyseus room WebSockets on port `80`/`443`.
 
+### Phase 8 — Multiplayer Technical Hardening & Security Audit (`COMPLETED`)
+- [x] **P0 Multi-Player Physics Isolation (`PhysicsWorld.ts`, `CoopHunterRoom.ts`):**
+  - Replaced the single shared kinematic player collider with a per-player `PlayerPhysicsActor` registry (`Map<string, PlayerPhysicsActor>`) so all 2–4 players in `CoopHunterRoom` own independent Rapier `RigidBody`, capsule `Collider`, and `KinematicCharacterController` instances.
+  - Defined and enforced a non-blocking pass-through player–player collision policy (with optional solid toggle via `setPlayerToPlayerCollision`) while filtering all player colliders out of world grapple/LoS raycasts (`playerColliderHandles`).
+  - Added full lifecycle cleanup (`ensurePlayerActor`, `removePlayerActor`, `dispose`) on join, reconnect handoff, leave, match restart, and room disposal.
+- [x] **P0 Authoritative Fixed-Tick Simulation & Input Validation (`Protocol.ts`, `CoopHunterRoom.ts`, `WorldGrappleSolver.ts`):**
+  - Eliminated server reliance on client-reported `frame.dt`. Every connected player is stepped at most **once per server tick** using the authoritative `fixedDt = 1/60s` (`coalesceInputBatch`), preventing `frame.dt` inflation and packet-burst speed-hacking while preserving edge-triggered actions (`fire`, `release`, `jumpPressed`, `dodgePressed`, `resupplyPressed`, `escapePressed`).
+  - Added `validateAndSanitizeInputFrame` and `validateAttackIntent` to enforce monotonic sequence numbers (`seq > lastReceivedSeq`), reject duplicate/stale/out-of-order packets, and block `NaN`/`Infinity`/out-of-bounds vector payloads.
+- [x] **P0 Authoritative Combat Security (`CoopHunterRoom.ts`):**
+  - **Thunder Spear Anti-Wallhack & Origin Clamping:** Clamps `aimOrigin` within `10m` of authoritative `player.position` with Line-of-Sight verification (`hasLineOfSight`), blocks direct target locks and AoE splash damage through solid buildings/walls, and deduplicates `attack_intent` by `seq`.
+  - **Melee Anti-Wallhack & Swing Deduplication:** Verifies `hasLineOfSight` from `playerSlashCenter` to current/historical Titan hurtboxes and tracks `hitZonesInSwing` to prevent hitting through walls or double-hitting a zone in a single swing.
+- [x] **P1 Session Security, Bounded Reconnection, Resource Disposal & CI/CD:**
+  - Server generates 192-bit cryptographic session tokens (`st_<48-hex>`) via `node:crypto.randomBytes(24)` with `15m` TTL and rejects client-invented tokens on initial join or `onAuth`.
+  - Added bounded exponential-backoff reconnection (`reconnectWithBackoff`, `maxReconnectAttempts = 4`, timeout `8s`) and reconciliation telemetry (`reconciliationCorrectionCount`, `maxPositionError`, `jitterMsEstimate`) in `NetworkClient.ts`.
+  - Added Three.js geometry/material disposal (`MissionManager`, `RemotePlayerManager`, `VFXManager`), Rapier WASM `world.free()` disposal, `/api/metrics` telemetry endpoint, `.github/workflows/ci.yml`, and 24 automated Vitest unit, integration & security regression tests (`24/24 PASS`).
+
+### Phase 9 — Minimal Cinematic UI/UX Redesign (`COMPLETED`)
+- [x] **Modular UI Architecture & Dirty-Checked DOM Updates (`src/ui/`):**
+  - Split the monolithic `UIManager.ts` into dedicated, reusable controllers: `HudController.ts`, `WorldMarkersController.ts` (with DOM node pooling for 3D teammate tags, pings, and AI debug labels), `TacticalOverlayController.ts`, and `UIManager.ts`.
+  - Eliminated per-frame `innerHTML` string rebuilding in favor of pre-allocated pip nodes and dirty-checked state caches.
+- [x] **Minimal Cinematic Gameplay HUD (`HudController.ts`, `main.css`):**
+  - **Top-Left:** Compact Mission Name & Wave pill (`DEFENSE OF VALKENBURG · Wave 1 / 2`).
+  - **Top-Right:** Minimal `Titans Slain` counter (`0 / 7`), contextual `Combo` badge, and abnormal latency/reconnection warning pill.
+  - **Center:** Precision crosshair dot + ring and Left/Right ODM hook brackets distinguishing `Attached`, `In Range`, `Ready`, and `Out of Range` (`data-hook-state`), plus an unobstructed 3D-projected Nape/Target Lock diamond reticle (`WorldMarkersController.ts`) visible only when a Titan target is locked.
+  - **Bottom-Left:** Slim linear **HP** & **Gas** bars with low-resource pulse warnings (`<= 30%` HP, `<= 22%` Gas) and compact airspeed readout (`m/s`).
+  - **Bottom-Right:** Compact **Blades** (durability bar + 6 spare pips) and **Thunder Spears** (`4 / 4` + 4 rocket pips), replacing the permanent 10-line controls box with a subtle `Hold [H] Tactical Info` hint.
+- [x] **Tactical Overlay & Keybinding Conflict Resolution (`TacticalOverlayController.ts`, `InputManager.ts`):**
+  - Moved detailed score, elapsed time, projected rank, network RTT ping, Co-op Squad Overview table, and the full Controls Reference into `#hud-tactical-overlay`.
+  - Preserved `Tab` for Target Lock by default while binding `Hold [H / ~]` to the Tactical Overlay, and added a Settings option (`tacticalOverlayKey`) allowing players to swap `Hold [Tab]` to the Tactical Overlay (`Target Lock on [MMB / T]`).
+- [x] **Redesigned Desktop Menus & 4-Slot Co-op Waiting Lobby (`UIManager.ts`, `main.css`):**
+  - Asymmetric left-aligned Main Menu preserving the live 3D city view, 2-column Multiplayer Room Browser, 4-Slot Co-op Waiting Lobby with one-click `Copy Code` feedback, Pause Menu, categorized Settings Modal, and Victory/Defeat Results Screen verified across `1920×1080` and `1366×768`.
+
 ---
 
-## 2. Next Roadmap Phases (Phases 8 to 10)
+## 2. Next Roadmap Phases (Phases 10 to 12)
 
-- [ ] **Phase 8 — Boss Titans & Co-op Raid Objectives:** Armored Titan (requires Thunder Spears to crack armor plates), Jaw Titan (high-speed rooftop leaper), and Defend the Outer Gatehouse / Escort Supply Wagon missions.
-- [ ] **Phase 9 — Character Progression & Equipment Upgrade Tree:** Spend mission score to upgrade Gas Cylinder Capacity, Wire Range, Reel-In Torque, Mono-Blade Durability, and Cape Cosmetics.
-- [ ] **Phase 10 — Expanded District Map, Weather & Day/Night Atmosphere:** Expanded `500m × 500m` district with Giant Forest zone, Sunset/Night flares (`Signal Flares`), and spatial audio.
+- [ ] **Phase 10 — Boss Titans & Co-op Raid Objectives:** Armored Titan (requires Thunder Spears to crack armor plates), Jaw Titan (high-speed rooftop leaper), and Defend the Outer Gatehouse / Escort Supply Wagon missions.
+- [ ] **Phase 11 — Character Progression & Equipment Upgrade Tree:** Spend mission score to upgrade Gas Cylinder Capacity, Wire Range, Reel-In Torque, Mono-Blade Durability, and Cape Cosmetics.
+- [ ] **Phase 12 — Expanded District Map, Weather & Day/Night Atmosphere:** Expanded `500m × 500m` district with Giant Forest zone, Sunset/Night flares (`Signal Flares`), and spatial audio.
 
 ---
 

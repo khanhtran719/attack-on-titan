@@ -379,7 +379,7 @@ export function stepReplayedInputFrame(
   rightHook: { active: boolean; anchorPos: THREE.Vector3; restLength: number },
   frame: C2S_InputFrame
 ): { grounded: boolean } {
-  const dt = clamp(frame.dt || 1 / 60, 0.004, 0.05);
+  const dt = GAME_CONFIG.physics.fixedTimestep;
   const camYaw = Number.isFinite(frame.yaw) ? frame.yaw : 0;
   const camFlatForward = new THREE.Vector3(
     -Math.sin(camYaw),
