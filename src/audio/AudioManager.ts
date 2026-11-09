@@ -238,4 +238,54 @@ export class AudioManager {
       osc.stop(now + idx * 0.055 + 0.2);
     });
   }
+
+  public playThunderSpearLaunch(): void {
+    if (!this.ensureReady() || !this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(280, now);
+    osc.frequency.exponentialRampToValueAtTime(920, now + 0.14);
+    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.23);
+  }
+
+  public playThunderSpearExplosion(): void {
+    if (!this.ensureReady() || !this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+
+    // Deep thunderous boom + crackling high-voltage snap
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(140, now);
+    osc.frequency.exponentialRampToValueAtTime(28, now + 0.48);
+    gain.gain.setValueAtTime(0.48, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.52);
+  }
+
+  public playGrabEscape(): void {
+    if (!this.ensureReady() || !this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(620, now);
+    osc.frequency.exponentialRampToValueAtTime(1420, now + 0.18);
+    gain.gain.setValueAtTime(0.34, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.21);
+  }
 }

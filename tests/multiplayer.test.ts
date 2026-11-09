@@ -127,6 +127,9 @@ describe('Titan Hunter 3D — Multiplayer Co-op Suite', () => {
       maxGas: 100,
       bladeDurability: 100,
       spareBlades: 6,
+      thunderSpears: 4,
+      grabbedByTitanId: null,
+      grabEscapeProgress: 0,
       leftHook: {
         active: true,
         anchor: [2, 28, -30],
@@ -841,5 +844,122 @@ describe('Titan Hunter 3D — Multiplayer Co-op Suite', () => {
       expect(replayedVel.length()).toBeGreaterThan(22);
       expect(replayedPos.distanceTo(simPos)).toBeLessThan(2.5);
     }
+  });
+
+  it('11. Authoritative Co-op Phase 7: Thunder Spears AoE blast, Spin-Slash multi-hit, Titan Grab Self-Escape & Teammate Rescue', async () => {
+    const room = new CoopHunterRoom();
+    (room as any).roomId = 'test_phase7_room';
+    (room as any).setPrivate = async () => {};
+    (room as any).setMetadata = async () => {};
+    const combatEvents: any[] = [];
+    (room as any).broadcast = (type: string, payload: any) => {
+      if (type === 'combat_event') combatEvents.push(payload);
+    };
+
+    const messageHandlers = new Map<string, (client: any, payload: any) => void>();
+    (room as any).onMessage = (
+      type: string,
+      cb: (client: any, payload: any) => void
+    ) => {
+      messageHandlers.set(type, cb);
+    };
+
+    await room.onCreate({ roomName: 'Thunder Spear Squad', isPublic: true });
+    const c1 = createMockClient('sess_p1');
+    const c2 = createMockClient('sess_p2');
+    room.onJoin(c1 as any, { nickname: 'Levi' });
+    room.onJoin(c2 as any, { nickname: 'Hange' });
+
+    const lobbyHandler = messageHandlers.get('lobby_action')!;
+    lobbyHandler(c2, { action: 'ready' });
+    lobbyHandler(c1, { action: 'start_match' });
+    expect(room.phase).toBe('playing');
+
+    const inputHandler = messageHandlers.get('input_frame')!;
+    const attackHandler = messageHandlers.get('attack_intent')!;
+    const internalPlayers = (room as any).players as Map<string, any>;
+    const titansMap = (room as any).titans as Map<string, ServerTitan>;
+
+    const p1 = internalPlayers.get('sess_p1')!;
+    const p2 = internalPlayers.get('sess_p2')!;
+    const titan = Array.from(titansMap.values())[0];
+
+    // 1. Test Titan Grab Capture on Player 1 & Self-Escape via Mash [F]/[SPACE]
+    p1.position.copy(titan.position).add(new THREE.Vector3(0, 5.5, 2.0));
+    (room as any).resolveTitanAttackOnPlayers(
+      {
+        titan,
+        type: 'grab',
+        damage: 42,
+        impactPoint: p1.position.clone(),
+        radius: 5.0,
+      },
+      Date.now()
+    );
+
+    expect(p1.grabbedByTitanId).toBe(titan.id);
+    expect(titan.grabbedPlayerId).toBe('sess_p1');
+    expect(combatEvents.some((e) => e.type === 'player_grabbed')).toBe(true);
+
+    // Player 1 mashes escapePressed 3 times to sever Titan's RightArm and break free
+    for (let i = 0; i < 3; i++) {
+      p1.packetsThisSecond = 0;
+      inputHandler(
+        c1,
+        makeBaseInputFrame(100 + i, {
+          escapePressed: true,
+        })
+      );
+      (room as any).stepAuthoritativeSimulation(1 / 60);
+    }
+
+    expect(p1.grabbedByTitanId).toBeNull();
+    expect(titan.grabbedPlayerId).toBeNull();
+    expect(titan.aiState).toBe('Stunned');
+    expect(combatEvents.some((e) => e.type === 'grab_escaped')).toBe(true);
+
+    // 2. Test Teammate Rescue via Authoritative Thunder Spear Blast!
+    const titan2 = Array.from(titansMap.values())[1];
+    p1.invulnerableUntilMs = 0;
+    p1.position.copy(titan2.position).add(new THREE.Vector3(0, 5.5, 2.0));
+    (room as any).resolveTitanAttackOnPlayers(
+      {
+        titan: titan2,
+        type: 'grab',
+        damage: 42,
+        impactPoint: p1.position.clone(),
+        radius: 5.0,
+      },
+      Date.now()
+    );
+    expect(p1.grabbedByTitanId).toBe(titan2.id);
+
+    // Player 2 fires a Thunder Spear at titan2's Nape from 25m away!
+    p2.position.copy(titan2.position).add(new THREE.Vector3(0, 8.0, -22.0));
+    expect(p2.thunderSpears).toBe(4);
+    const prevAssists = p2.assists;
+
+    attackHandler(c2, {
+      seq: 201,
+      isHeavy: true,
+      weaponType: 'thunder_spear',
+      aimYaw: 0,
+      aimOrigin: [p2.position.x, p2.position.y + 1.5, p2.position.z],
+      aimDir: [0, 0, 1],
+      targetTitanId: titan2.id,
+      targetZone: 'Nape',
+      clientRttMs: 40,
+    });
+
+    expect(p2.thunderSpears).toBe(3);
+    // Player 1 is immediately rescued from titan2's grab!
+    expect(p1.grabbedByTitanId).toBeNull();
+    expect(titan2.grabbedPlayerId).toBeNull();
+    expect(p2.assists).toBeGreaterThan(prevAssists);
+    expect(
+      combatEvents.some((e) => e.type === 'thunder_spear_exploded')
+    ).toBe(true);
+
+    room.onDispose();
   });
 });

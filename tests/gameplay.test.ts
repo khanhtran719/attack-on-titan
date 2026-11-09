@@ -270,4 +270,109 @@ describe('Titan Hunter 3D — Core Gameplay, Physics, Rig & Combat Verification'
     missions.clearTitans();
     expect(scene.children.length).toBe(baseChildren);
   });
+
+  it('supports Phase 7 Thunder Spear AoE blasts, Levi Spin-Slash multi-zone hits, and Titan Grab Escape Counter', async () => {
+    const scene = new THREE.Scene();
+    const physics = await PhysicsWorld.create();
+    const odm = new ODMSystem(scene, physics);
+    const player = new PlayerController(scene);
+    const combat = new CombatSystem();
+    const dummyAudio = {
+      playBladeImpact: () => {},
+      playSwordSlash: () => {},
+      playGrabEscape: () => {},
+      playResupply: () => {},
+    } as any;
+
+    // 1. Thunder Spear Aiming & AoE Detonation
+    const titan = new TitanEntity('t_phase7', 'normal', new THREE.Vector3(0, 0, -20), 8.0);
+    titan.syncHurtboxWorldPositions();
+    expect(player.thunderSpears).toBe(GAME_CONFIG.player.maxThunderSpears);
+
+    const aimRes = combat.aimThunderSpear(
+      new THREE.Vector3(0, 4, 0),
+      new THREE.Vector3(0, 0.15, -1).normalize(),
+      player.position,
+      [titan]
+    );
+    expect(aimRes.hitTitan?.id).toBe('t_phase7');
+
+    const hitEvents: any[] = [];
+    combat.detonateThunderSpear(
+      titan.hurtboxes.RightArm.worldPosition.clone(),
+      titan,
+      'RightArm',
+      [titan],
+      (evt) => hitEvents.push(evt)
+    );
+    // Thunder Spear blast shatters RightArm AND splashes nearby zones, stunning the Titan
+    expect(hitEvents.length).toBeGreaterThanOrEqual(1);
+    expect(hitEvents.some((e) => e.isThunderSpear && e.limbBroken)).toBe(true);
+    expect(titan.aiState).toBe('Stunned');
+
+    // 2. Titan Grab Capture & Self-Escape Counter-Slash
+    const grabTitan = new TitanEntity('t_grabber', 'normal', new THREE.Vector3(0, 0, 0), 8.0);
+    grabTitan.syncHurtboxWorldPositions();
+
+    const grabResult = player.captureByTitanGrab(
+      grabTitan,
+      14,
+      odm,
+      dummyAudio
+    );
+    expect(grabResult).toBe('grabbed');
+    expect(player.grabbedByTitanId).toBe('t_grabber');
+    expect(grabTitan.grabbedPlayerId).toBe('local');
+
+    // Mash [F] (attackJustPressed) 3 times to sever the Titan's grabbing hand and escape!
+    const dummyCam = {
+      getFlatForwardVector: () => new THREE.Vector3(0, 0, -1),
+      getRightVector: () => new THREE.Vector3(1, 0, 0),
+      getForwardVector: () => new THREE.Vector3(0, 0, -1),
+      camera: { position: new THREE.Vector3(0, 2, 5) },
+    } as any;
+
+    for (let i = 0; i < 3; i++) {
+      player.stepPhysics(
+        1 / 60,
+        {
+          moveForward: 0,
+          moveRight: 0,
+          jumpPressed: false,
+          jumpHeld: false,
+          leftGrappleHeld: false,
+          leftGrappleJustPressed: false,
+          rightGrappleHeld: false,
+          rightGrappleJustPressed: false,
+          boostHeld: false,
+          attackJustPressed: true,
+          thunderSpearJustPressed: false,
+          dodgeJustPressed: false,
+          lockTargetJustPressed: false,
+          cycleZoneDelta: 0,
+          resupplyJustPressed: false,
+          interactJustPressed: false,
+          interactHeld: false,
+          pingJustPressed: false,
+          quickChatKey: null,
+          pauseJustPressed: false,
+          mouseDeltaX: 0,
+          mouseDeltaY: 0,
+          pointerLocked: true,
+        },
+        dummyCam,
+        physics,
+        odm,
+        combat,
+        [grabTitan],
+        dummyAudio
+      );
+    }
+
+    expect(player.grabbedByTitanId).toBeNull();
+    expect(grabTitan.grabbedPlayerId).toBeNull();
+    expect(grabTitan.hurtboxes.RightArm.disabledTimer).toBeGreaterThan(0);
+    expect(grabTitan.aiState).toBe('Stunned');
+    expect(player.velocity.y).toBeGreaterThan(10);
+  });
 });

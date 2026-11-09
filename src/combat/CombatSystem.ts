@@ -18,6 +18,8 @@ export interface CombatHitEvent {
   killedTitan: boolean;
   limbBroken: boolean;
   impactPoint: THREE.Vector3;
+  isThunderSpear?: boolean;
+  isSpinSlash?: boolean;
 }
 
 const ZONE_CYCLE_ORDER: TitanZoneType[] = [
@@ -38,7 +40,9 @@ export class CombatSystem {
   private attackTimer = 0;
   private attackDuration = 0;
   private attackCooldownTimer = 0;
+  public thunderSpearCooldownTimer = 0;
   private hitTargetsInCurrentSwing: Set<string> = new Set();
+  private hitsPerTitanInSwing: Map<string, number> = new Map();
 
   // Previous frame blade endpoints for continuous swept-blade collision detection
   private prevLeftHilt = new THREE.Vector3();
@@ -126,6 +130,7 @@ export class CombatSystem {
       ? GAME_CONFIG.combat.heavyAttackDuration
       : GAME_CONFIG.combat.lightAttackDuration;
     this.hitTargetsInCurrentSwing.clear();
+    this.hitsPerTitanInSwing.clear();
     this.hasPrevBladePositions = false;
 
     // Close-range aerial strike assist lunge toward nearest or locked hurtbox within 8.5m
@@ -175,6 +180,167 @@ export class CombatSystem {
     return this.isAttacking;
   }
 
+  public isHeavySpinAttack(): boolean {
+    return this.isAttacking && this.isHeavyAttack;
+  }
+
+  public canFireThunderSpear(thunderSpears: number): boolean {
+    return thunderSpears > 0 && this.thunderSpearCooldownTimer <= 0;
+  }
+
+  /**
+   * Resolves aiming for a rocket-propelled Thunder Spear (locked Titan hurtbox or aim raycast).
+   */
+  public aimThunderSpear(
+    camOrigin: THREE.Vector3,
+    camForward: THREE.Vector3,
+    playerPos: THREE.Vector3,
+    titans: TitanEntity[],
+    fallbackPoint?: THREE.Vector3 | null
+  ): {
+    targetPos: THREE.Vector3;
+    hitTitan: TitanEntity | null;
+    hitZone: TitanZoneType;
+  } {
+    this.thunderSpearCooldownTimer = GAME_CONFIG.combat.thunderSpearCooldown;
+    const maxRange = GAME_CONFIG.combat.thunderSpearRange;
+
+    if (this.lockedTitan && !this.lockedTitan.isDead()) {
+      const hb = this.lockedTitan.hurtboxes[this.lockedZone];
+      if (hb && hb.worldPosition.distanceTo(playerPos) <= maxRange) {
+        return {
+          targetPos: hb.worldPosition.clone(),
+          hitTitan: this.lockedTitan,
+          hitZone: this.lockedZone,
+        };
+      }
+    }
+
+    // Raycast against all live Titan hurtboxes with generous explosive magnetic cone
+    let bestTitan: TitanEntity | null = null;
+    let bestZone: TitanZoneType = 'Nape';
+    let bestScore = Infinity;
+    let bestPoint: THREE.Vector3 | null = null;
+
+    for (const titan of titans) {
+      if (titan.isDead()) continue;
+      for (const zone of ZONE_CYCLE_ORDER) {
+        const hb = titan.hurtboxes[zone];
+        const dist = playerPos.distanceTo(hb.worldPosition);
+        if (dist > maxRange) continue;
+        const toHb = hb.worldPosition.clone().sub(camOrigin);
+        const proj = toHb.dot(camForward);
+        if (proj <= 0) continue;
+        const closest = camOrigin.clone().addScaledVector(camForward, proj);
+        const radialErr = closest.distanceTo(hb.worldPosition);
+        if (radialErr <= hb.radius * 3.4) {
+          const score = radialErr * 3.0 + dist * 0.15 - (zone === 'Nape' ? 2.5 : 0);
+          if (score < bestScore) {
+            bestScore = score;
+            bestTitan = titan;
+            bestZone = zone;
+            bestPoint = hb.worldPosition.clone();
+          }
+        }
+      }
+    }
+
+    if (bestTitan && bestPoint) {
+      return {
+        targetPos: bestPoint,
+        hitTitan: bestTitan,
+        hitZone: bestZone,
+      };
+    }
+
+    const worldTarget =
+      fallbackPoint ??
+      camOrigin.clone().addScaledVector(camForward, Math.min(45, maxRange));
+    return {
+      targetPos: worldTarget,
+      hitTitan: null,
+      hitZone: 'Nape',
+    };
+  }
+
+  /**
+   * Detonates a Thunder Spear at `explosionPos`, dealing armor-piercing direct & AoE splash damage
+   * to nearby Titan hurtboxes, stunning Titans, and breaking any active Titan grab.
+   */
+  public detonateThunderSpear(
+    explosionPos: THREE.Vector3,
+    directTitan: TitanEntity | null,
+    directZone: TitanZoneType,
+    titans: TitanEntity[],
+    onHit: (event: CombatHitEvent) => void
+  ): void {
+    const blastRadius = GAME_CONFIG.combat.thunderSpearBlastRadius;
+    const baseDmg = GAME_CONFIG.combat.thunderSpearBaseDamage;
+    const splashDmg = GAME_CONFIG.combat.thunderSpearSplashDamage;
+
+    for (const titan of titans) {
+      if (titan.isDead()) continue;
+
+      const isDirectTitan = directTitan && titan.id === directTitan.id;
+      let hitAnyZoneOnTitan = false;
+
+      // Check direct target zone first
+      const zonesToCheck: TitanZoneType[] = isDirectTitan
+        ? [
+            directZone,
+            ...ZONE_CYCLE_ORDER.filter((z) => z !== directZone),
+          ]
+        : ZONE_CYCLE_ORDER;
+
+      for (const zone of zonesToCheck) {
+        if (titan.isDead()) break;
+        const hb = titan.hurtboxes[zone];
+        const dist = hb.worldPosition.distanceTo(explosionPos);
+        const isPrimaryZone = isDirectTitan && zone === directZone;
+
+        // Nape execution requires direct Nape targeting on the primary Titan (or direct proximity <= 1.8m)
+        if (zone === 'Nape' && !isPrimaryZone && (isDirectTitan || dist > 1.8)) {
+          continue;
+        }
+
+        if (isPrimaryZone || dist <= blastRadius + hb.radius) {
+          const dmg = isPrimaryZone ? baseDmg : splashDmg;
+          const res = titan.applyZoneDamage(zone, dmg);
+          hitAnyZoneOnTitan = true;
+
+          this.comboCount++;
+          this.comboTimer = GAME_CONFIG.combat.comboResetTime;
+
+          onHit({
+            titan,
+            zone,
+            damage: dmg,
+            velocityMultiplier: 2.0,
+            isCriticalNapeHit: zone === 'Nape',
+            glancedOffFront: false,
+            killedTitan: res.killed,
+            limbBroken: res.limbBroken,
+            impactPoint: hb.worldPosition.clone(),
+            isThunderSpear: true,
+          });
+
+          if (res.killed) break;
+        }
+      }
+
+      // Any Thunder Spear blast on a live Titan releases its grabbed victim and staggers it
+      if (hitAnyZoneOnTitan && !titan.isDead()) {
+        titan.releaseGrabbedPlayer();
+        if (titan.aiState !== 'Injured') {
+          titan.aiState = 'Stunned';
+          titan.stateTimer = Math.max(titan.stateTimer, 3.5);
+          titan.velocity.set(0, 0, 0);
+          titan.playAnimation('Stagger', 0.15, true);
+        }
+      }
+    }
+  }
+
   public isInActiveAttackFrames(): boolean {
     if (!this.isAttacking || this.attackDuration <= 0) return false;
     const norm = this.attackTimer / this.attackDuration;
@@ -213,6 +379,12 @@ export class CombatSystem {
 
     if (this.attackCooldownTimer > 0) {
       this.attackCooldownTimer = Math.max(0, this.attackCooldownTimer - dt);
+    }
+    if (this.thunderSpearCooldownTimer > 0) {
+      this.thunderSpearCooldownTimer = Math.max(
+        0,
+        this.thunderSpearCooldownTimer - dt
+      );
     }
 
     if (this.lockedTitan && this.lockedTitan.isDead()) {
@@ -300,9 +472,13 @@ export class CombatSystem {
 
           if (leftHit || rightHit || spinHit) {
             this.hitTargetsInCurrentSwing.add(hitKey);
+            const prevHits = this.hitsPerTitanInSwing.get(titan.id) ?? 0;
+            const newHits = prevHits + 1;
+            this.hitsPerTitanInSwing.set(titan.id, newHits);
 
-            // Prevent hitting multiple zones on the same Titan in a single light swing
-            if (!this.isHeavyAttack) {
+            // Light attacks hit 1 zone per Titan; Heavy Spin-Slash can slice through up to 2 zones!
+            const maxZonesPerSwing = this.isHeavyAttack ? 2 : 1;
+            if (newHits >= maxZonesPerSwing) {
               for (const z of ZONE_CYCLE_ORDER) {
                 this.hitTargetsInCurrentSwing.add(`${titan.id}:${z}`);
               }
@@ -353,8 +529,11 @@ export class CombatSystem {
               killedTitan: result.killed,
               limbBroken: result.limbBroken,
               impactPoint: hb.worldPosition.clone(),
+              isSpinSlash: this.isHeavyAttack,
             });
-            break;
+            if (!this.isHeavyAttack || newHits >= maxZonesPerSwing) {
+              break;
+            }
           }
         }
       }

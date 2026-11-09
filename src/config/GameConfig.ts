@@ -62,6 +62,7 @@ export const GAME_CONFIG = {
     maxGas: 100,
     maxBladeDurability: 100,
     maxSpareBlades: 6,
+    maxThunderSpears: 4,
   },
 
   odm: {
@@ -101,6 +102,15 @@ export const GAME_CONFIG = {
     bladeDurabilityLossHardHit: 22,
     hitStopDuration: 0.065,
     comboResetTime: 6.5,
+    thunderSpearSpeed: 95,
+    thunderSpearRange: 75,
+    thunderSpearBaseDamage: 580,
+    thunderSpearSplashDamage: 340,
+    thunderSpearBlastRadius: 6.5,
+    thunderSpearCooldown: 0.85,
+    grabHoldDuration: 3.5,
+    grabCrushDps: 10,
+    grabEscapeStep: 0.38,
   },
 
   camera: {

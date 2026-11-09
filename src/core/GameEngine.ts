@@ -336,6 +336,10 @@ export class GameEngine {
       this.player.gas = localNet.gas;
       this.player.bladeDurability = localNet.bladeDurability;
       this.player.spareBlades = localNet.spareBlades;
+      this.player.thunderSpears =
+        localNet.thunderSpears ?? this.player.thunderSpears;
+      this.player.grabbedByTitanId = localNet.grabbedByTitanId ?? null;
+      this.player.grabEscapeProgress = localNet.grabEscapeProgress ?? 0;
 
       const isDownedOrDead =
         localNet.lifeState === 'downed' || localNet.lifeState === 'dead';
@@ -529,6 +533,22 @@ export class GameEngine {
       if (evt.attackerId === myId) {
         this.actionCam.addShake(isCrit ? 0.36 : 0.2, 0.22);
       }
+      this.ui.showCombatBanner(evt.message);
+    } else if (evt.type === 'thunder_spear_exploded') {
+      this.audio.playThunderSpearExplosion();
+      this.vfx.spawnThunderSpearExplosion(impactPos);
+      this.actionCam.addShake(0.42, 0.28);
+      this.ui.showCombatBanner(evt.message);
+    } else if (evt.type === 'player_grabbed') {
+      if (evt.targetPlayerId === myId) {
+        this.ui.flashDamageVignette();
+        this.actionCam.addShake(0.35, 0.25);
+        this.audio.playBladeImpact(false, false);
+      }
+      this.ui.showCombatBanner(evt.message);
+    } else if (evt.type === 'grab_escaped') {
+      this.audio.playGrabEscape();
+      this.vfx.spawnSlashArc(impactPos, this.player.yaw, true);
       this.ui.showCombatBanner(evt.message);
     } else if (evt.type === 'player_damaged' || evt.type === 'player_downed') {
       if (evt.targetPlayerId === myId) {
@@ -923,10 +943,91 @@ export class GameEngine {
       this.vfx.spawnSlashArc(
         this.player.position,
         this.player.yaw,
-        this.player.isBoosting
+        this.player.isBoosting || this.combat.isHeavySpinAttack()
       );
       if (isCoop && this.netClient.connectionState === 'connected') {
         this.trySendCoopAttackIntent(nowMs);
+      }
+    }
+
+    // Handle Thunder Spear Launch (KeyV) in both Single-Player and Co-op
+    if (
+      inputState.thunderSpearJustPressed &&
+      this.combat.canFireThunderSpear(this.player.thunderSpears) &&
+      !this.player.isDead()
+    ) {
+      const camOrigin = this.actionCam.camera.position.clone();
+      const camForward = this.actionCam.getForwardVector();
+      const worldHit = this.physics.castRay(
+        camOrigin,
+        camForward,
+        GAME_CONFIG.combat.thunderSpearRange,
+        false
+      );
+      const aimRes = this.combat.aimThunderSpear(
+        camOrigin,
+        camForward,
+        this.player.position,
+        this.missions.titans,
+        worldHit ? worldHit.point : null
+      );
+
+      this.player.thunderSpears = Math.max(0, this.player.thunderSpears - 1);
+      this.audio.playThunderSpearLaunch();
+      const launchOrigin = this.player.position
+        .clone()
+        .add(new THREE.Vector3(0, 1.4, 0));
+
+      if (isCoop && this.netClient.connectionState === 'connected') {
+        this.vfx.spawnThunderSpearProjectile(launchOrigin, aimRes.targetPos);
+        this.netClient.sendAttackIntent({
+          seq: this.netClient.nextInputSequence(),
+          isHeavy: true,
+          weaponType: 'thunder_spear',
+          aimYaw: this.actionCam.yaw,
+          aimOrigin: [camOrigin.x, camOrigin.y, camOrigin.z],
+          aimDir: [camForward.x, camForward.y, camForward.z],
+          targetTitanId: aimRes.hitTitan?.id || null,
+          targetZone: aimRes.hitZone,
+          clientRttMs: this.netClient.rttMs,
+        });
+      } else {
+        this.vfx.spawnThunderSpearProjectile(
+          launchOrigin,
+          aimRes.targetPos,
+          () => {
+            this.audio.playThunderSpearExplosion();
+            this.actionCam.addShake(0.45, 0.3);
+            this.combat.detonateThunderSpear(
+              aimRes.targetPos,
+              aimRes.hitTitan,
+              aimRes.hitZone,
+              this.missions.titans,
+              (hitEvent) => {
+                if (hitEvent.killedTitan) {
+                  this.missions.onTitanKilled(
+                    hitEvent.titan,
+                    hitEvent.velocityMultiplier,
+                    this.combat.comboCount,
+                    this.cityBuilder.getTitanSpawnPoints()
+                  );
+                  this.ui.showCombatBanner(
+                    `THUNDER SPEAR EXECUTION! (${hitEvent.damage} BLAST DMG)`
+                  );
+                } else if (hitEvent.limbBroken) {
+                  this.missions.onLimbBroken();
+                  this.ui.showCombatBanner(
+                    `THUNDER SPEAR SHATTERED TITAN ${hitEvent.zone.toUpperCase()}! (${hitEvent.damage} DMG)`
+                  );
+                } else {
+                  this.ui.showCombatBanner(
+                    `THUNDER SPEAR BLAST: ${hitEvent.damage} DMG!`
+                  );
+                }
+              }
+            );
+          }
+        );
       }
     }
 
@@ -988,7 +1089,7 @@ export class GameEngine {
             );
           } else {
             this.ui.showCombatBanner(
-              `${hitEvent.zone.toUpperCase()} HIT: ${hitEvent.damage} DMG`
+              `${hitEvent.isSpinSlash ? 'SPIN-SLASH' : hitEvent.zone.toUpperCase()} HIT: ${hitEvent.damage} DMG`
             );
           }
         }
@@ -1247,6 +1348,11 @@ export class GameEngine {
               : null,
           lockedTitanId: this.combat.lockedTitan?.id || null,
           lockedZone: this.combat.lockedZone,
+          escapePressed:
+            !this.coopOverlayOpen &&
+            (inputState.attackJustPressed ||
+              inputState.jumpPressed ||
+              inputState.thunderSpearJustPressed),
         };
 
         this.netClient.sendInputFrame(frame);
@@ -1261,6 +1367,7 @@ export class GameEngine {
     }
 
     // Single-Player Simulation ('hunt' | 'training')
+    const wasGrabbedBeforeStep = this.player.grabbedByTitanId !== null;
     this.player.stepPhysics(
       dt,
       inputState,
@@ -1276,6 +1383,17 @@ export class GameEngine {
         }
       }
     );
+    if (
+      wasGrabbedBeforeStep &&
+      this.player.grabbedByTitanId === null &&
+      !this.player.isDead()
+    ) {
+      this.missions.onLimbBroken();
+      this.vfx.spawnSlashArc(this.player.position, this.player.yaw, true);
+      this.ui.showCombatBanner(
+        'COUNTER-SLASH! SEVERED TITAN HAND & ESCAPED GRAB (+350 PTS)'
+      );
+    }
 
     this.physics.step();
 
@@ -1299,6 +1417,27 @@ export class GameEngine {
             attackEvt.impactPoint
           );
           if (distToPlayer <= attackEvt.radius) {
+            if (attackEvt.type === 'grab' && titan.grabbedPlayerId === null) {
+              const grabOutcome = this.player.captureByTitanGrab(
+                titan,
+                Math.max(12, Math.round(attackEvt.damage * 0.35)),
+                this.odm,
+                this.audio,
+                () => {
+                  this.missions.onPerfectDodge();
+                  this.ui.showCombatBanner('PERFECT DODGE! (+250 PTS)');
+                }
+              );
+              if (grabOutcome === 'grabbed' || grabOutcome === 'killed') {
+                this.ui.flashDamageVignette();
+                this.actionCam.addShake(0.35, 0.25);
+                this.ui.showCombatBanner(
+                  'GRABBED BY TITAN! MASH [F] / [SPACE] OR FIRE [V] TO SEVER HAND!'
+                );
+              }
+              return;
+            }
+
             const kb = new THREE.Vector3()
               .subVectors(this.player.position, titan.position)
               .normalize();
@@ -1315,11 +1454,7 @@ export class GameEngine {
             if (damaged) {
               this.ui.flashDamageVignette();
               this.actionCam.addShake(0.35, 0.25);
-              this.ui.showCombatBanner(
-                attackEvt.type === 'grab'
-                  ? 'CRUSHED BY TITAN GRAB!'
-                  : 'STRUCK BY TITAN SMASH!'
-              );
+              this.ui.showCombatBanner('STRUCK BY TITAN SMASH!');
             }
           }
         }

@@ -63,6 +63,8 @@ export class UIManager {
   private bladeBarEl!: HTMLElement;
   private bladeTextEl!: HTMLElement;
   private bladePipsEl!: HTMLElement;
+  private spearTextEl!: HTMLElement;
+  private spearPipsEl!: HTMLElement;
   private speedTextEl!: HTMLElement;
 
   private crosshairRingEl!: HTMLElement;
@@ -112,9 +114,30 @@ export class UIManager {
   }
 
   private getDefaultServerUrl(): string {
+    const envHost =
+      (typeof import.meta !== 'undefined' &&
+        (import.meta as any).env?.VITE_SERVER_HOST) ||
+      '';
+    if (envHost) {
+      if (envHost.startsWith('ws://') || envHost.startsWith('wss://')) {
+        return envHost;
+      }
+      const proto =
+        typeof window !== 'undefined' && window.location?.protocol === 'https:'
+          ? 'wss'
+          : 'ws';
+      return `${proto}://${envHost}`;
+    }
+
     if (typeof window !== 'undefined' && window.location?.hostname) {
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      return `${proto}://${window.location.hostname}:2567`;
+      const port = window.location.port;
+      // In local Vite dev (5173) or test preview (4173), connect directly to :2567.
+      // In production Nginx (port 80/443/8080), use same-origin host proxied by Nginx!
+      if (port === '5173' || port === '4173') {
+        return `${proto}://${window.location.hostname}:2567`;
+      }
+      return `${proto}://${window.location.host}`;
     }
     return 'ws://localhost:2567';
   }
@@ -195,6 +218,14 @@ export class UIManager {
             <div class="blade-pips" id="hud-blade-pips"></div>
           </div>
 
+          <div class="bar-group">
+            <div class="bar-header">
+              <span>THUNDER SPEARS [V]</span>
+              <span id="hud-spear-text" style="color:#fbbf24;">4/4 READY</span>
+            </div>
+            <div class="blade-pips" id="hud-spear-pips"></div>
+          </div>
+
           <div class="speed-readout">
             <span>AIRSPEED VELOCITY</span>
             <strong id="hud-speed-text">0.0 m/s</strong>
@@ -205,7 +236,8 @@ export class UIManager {
           <div class="key-hint"><span>Move / Air Steer</span><span class="key-badge">WASD</span></div>
           <div class="key-hint"><span>Left / Right Grapple</span><span class="key-badge">LMB / RMB (or Z/X)</span></div>
           <div class="key-hint"><span>Gas Thruster Boost</span><span class="key-badge">SHIFT</span></div>
-          <div class="key-hint"><span>Dual Sword Slash</span><span class="key-badge">F</span></div>
+          <div class="key-hint"><span>Slash / Spin-Slash</span><span class="key-badge">F</span></div>
+          <div class="key-hint"><span>Fire Thunder Spear</span><span class="key-badge">V</span></div>
           <div class="key-hint"><span>Aerial Dodge</span><span class="key-badge">Q</span></div>
           <div class="key-hint"><span>Lock Titan / Cycle Limb</span><span class="key-badge">TAB / C / Wheel</span></div>
           <div class="key-hint"><span>Reload Blades / Resupply</span><span class="key-badge">R</span></div>
@@ -544,6 +576,8 @@ export class UIManager {
     this.bladeBarEl = this.root.querySelector('#hud-blade-bar')!;
     this.bladeTextEl = this.root.querySelector('#hud-blade-text')!;
     this.bladePipsEl = this.root.querySelector('#hud-blade-pips')!;
+    this.spearTextEl = this.root.querySelector('#hud-spear-text')!;
+    this.spearPipsEl = this.root.querySelector('#hud-spear-pips')!;
     this.speedTextEl = this.root.querySelector('#hud-speed-text')!;
 
     this.crosshairRingEl = this.root.querySelector('#crosshair-ring')!;
@@ -1112,6 +1146,18 @@ export class UIManager {
     }
     this.bladePipsEl.innerHTML = pipsHtml;
 
+    this.spearTextEl.textContent = `${player.thunderSpears}/${player.maxThunderSpears} ${
+      player.thunderSpears > 0 ? 'READY' : 'EMPTY (RESUPPLY [R])'
+    }`;
+    let spearPipsHtml = '';
+    for (let i = 0; i < player.maxThunderSpears; i++) {
+      const isAvail = i < player.thunderSpears;
+      spearPipsHtml += `<div class="blade-pip ${isAvail ? 'active' : ''}" style="${
+        isAvail ? 'background:#f59e0b;box-shadow:0 0 6px #fbbf24;' : ''
+      }"></div>`;
+    }
+    this.spearPipsEl.innerHTML = spearPipsHtml;
+
     const speed = player.velocity.length();
     this.speedTextEl.textContent = `${speed.toFixed(1)} m/s`;
 
@@ -1128,11 +1174,15 @@ export class UIManager {
     this.rightBracketEl.classList.toggle('ready', reticlePreview.canGrapple);
     this.rightBracketEl.classList.toggle('active', odm.rightHook.active);
 
-    // 4. Contextual Resupply / Blade Reload Prompt
-    if (nearSupplyDepot) {
+    // 4. Contextual Resupply / Blade Reload / Grab Escape Prompt
+    if (player.grabbedByTitanId) {
+      const escPct = Math.round(player.grabEscapeProgress * 100);
+      this.centerPromptEl.classList.remove('hidden');
+      this.centerPromptEl.textContent = `GRABBED BY TITAN! MASH [F] / [SPACE] OR FIRE [V] TO SEVER HAND (${escPct}%)`;
+    } else if (nearSupplyDepot) {
       this.centerPromptEl.classList.remove('hidden');
       this.centerPromptEl.textContent =
-        '[R] RESUPPLY GAS, BLADES & MEDICAL KIT';
+        '[R] RESUPPLY GAS, BLADES, THUNDER SPEARS & MEDICAL KIT';
     } else if (player.bladeDurability <= 0 && player.spareBlades > 0) {
       this.centerPromptEl.classList.remove('hidden');
       this.centerPromptEl.textContent =

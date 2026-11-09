@@ -47,6 +47,8 @@ export class TitanEntity {
   public deathFadeTimer = 0;
   public readyForRemoval = false;
   public attackHitDealtInCurrentSwing = false;
+  public grabbedPlayerId: string | null = null;
+  public grabHoldTimer = 0;
 
   private mixer: THREE.AnimationMixer;
   private actions: Map<TitanAnimName, THREE.AnimationAction> = new Map();
@@ -172,6 +174,22 @@ export class TitanEntity {
     return new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
   }
 
+  public getGrabHoldWorldPosition(): THREE.Vector3 {
+    const rightArm = this.hurtboxes.RightArm.worldPosition;
+    const forward = this.getForwardVector();
+    return rightArm
+      .clone()
+      .addScaledVector(forward, 1.35)
+      .add(new THREE.Vector3(0, 0.35, 0));
+  }
+
+  public releaseGrabbedPlayer(): string | null {
+    const prev = this.grabbedPlayerId;
+    this.grabbedPlayerId = null;
+    this.grabHoldTimer = 0;
+    return prev;
+  }
+
   public isDead(): boolean {
     return this.aiState === 'Dead';
   }
@@ -214,6 +232,7 @@ export class TitanEntity {
         this.aiState = 'Dead';
         this.stateTimer = 0;
         this.velocity.set(0, 0, 0);
+        this.releaseGrabbedPlayer();
         this.playAnimation('Death', 0.15, true);
         return { killed: true, limbBroken: false, remainingHp: 0 };
       }
@@ -248,6 +267,7 @@ export class TitanEntity {
           this.playAnimation('Stagger', 0.15, true);
         }
       }
+      this.releaseGrabbedPlayer();
       return { killed: false, limbBroken: true, remainingHp: 0 };
     }
 

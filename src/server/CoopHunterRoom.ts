@@ -74,6 +74,10 @@ interface ServerPlayerSession {
   maxGas: number;
   bladeDurability: number;
   spareBlades: number;
+  thunderSpears: number;
+  grabbedByTitanId: string | null;
+  grabEscapeProgress: number;
+  grabHoldRemaining: number;
   leftHook: ServerHook;
   rightHook: ServerHook;
   downedTimer: number;
@@ -93,6 +97,7 @@ interface ServerPlayerSession {
   invulnerableUntilMs: number;
   attackActiveUntilMs: number;
   nextAttackAllowedMs: number;
+  nextThunderSpearAllowedMs: number;
   leftHookRetryAfterMs: number;
   rightHookRetryAfterMs: number;
   lastLeftHookDebug: HookFireDebugInfo | null;
@@ -266,6 +271,10 @@ export class CoopHunterRoom extends Room {
       maxGas: GAME_CONFIG.player.maxGas,
       bladeDurability: GAME_CONFIG.player.maxBladeDurability,
       spareBlades: GAME_CONFIG.player.maxSpareBlades,
+      thunderSpears: GAME_CONFIG.player.maxThunderSpears,
+      grabbedByTitanId: null,
+      grabEscapeProgress: 0,
+      grabHoldRemaining: 0,
       leftHook: {
         side: 'left',
         active: false,
@@ -299,6 +308,7 @@ export class CoopHunterRoom extends Room {
       invulnerableUntilMs: 0,
       attackActiveUntilMs: 0,
       nextAttackAllowedMs: 0,
+      nextThunderSpearAllowedMs: 0,
       leftHookRetryAfterMs: 0,
       rightHookRetryAfterMs: 0,
       lastLeftHookDebug: null,
@@ -524,6 +534,10 @@ export class CoopHunterRoom extends Room {
       p.gas = p.maxGas;
       p.bladeDurability = GAME_CONFIG.player.maxBladeDurability;
       p.spareBlades = GAME_CONFIG.player.maxSpareBlades;
+      p.thunderSpears = GAME_CONFIG.player.maxThunderSpears;
+      p.grabbedByTitanId = null;
+      p.grabEscapeProgress = 0;
+      p.grabHoldRemaining = 0;
       p.leftHook.active = false;
       p.rightHook.active = false;
       p.downedTimer = 0;
@@ -655,12 +669,85 @@ export class CoopHunterRoom extends Room {
     player.reviveHoldActive = Boolean(frame.reviveHeld);
 
     if (player.lifeState !== 'alive') {
+      player.grabbedByTitanId = null;
+      player.grabEscapeProgress = 0;
       player.leftHook.active = false;
       player.rightHook.active = false;
       player.isBoosting = false;
       player.reviveHoldActive = false;
       this.stepPlayerPassive(player, dt, nowMs);
       return;
+    }
+
+    // Handle authoritative Titan Grab & Escape Counter (Mash [F] / [SPACE])
+    if (player.grabbedByTitanId) {
+      const grabbingTitan = this.titans.get(player.grabbedByTitanId);
+      if (
+        !grabbingTitan ||
+        grabbingTitan.isDead() ||
+        grabbingTitan.aiState === 'Stunned' ||
+        grabbingTitan.aiState === 'Injured'
+      ) {
+        player.grabbedByTitanId = null;
+        player.grabEscapeProgress = 0;
+        player.invulnerableUntilMs = nowMs + 1000;
+        player.velocity.set(0, 9.5, 0);
+      } else {
+        player.leftHook.active = false;
+        player.rightHook.active = false;
+        player.isBoosting = false;
+        player.grounded = false;
+        player.position.copy(grabbingTitan.getGrabHoldWorldPosition());
+        player.velocity.set(0, 0, 0);
+        player.anim = 'HitReaction';
+
+        if (frame.escapePressed || frame.jumpPressed) {
+          player.grabEscapeProgress = Math.min(
+            1.0,
+            player.grabEscapeProgress + GAME_CONFIG.combat.grabEscapeStep
+          );
+          player.anim = 'HeavyAttack';
+
+          if (player.grabEscapeProgress >= 1.0) {
+            grabbingTitan.applyDamageFromPlayer(player.id, 'RightArm', 999);
+            grabbingTitan.aiState = 'Stunned';
+            grabbingTitan.anim = 'Stagger';
+            grabbingTitan.stateTimer = 4.0;
+            grabbingTitan.releaseGrabbedPlayer();
+
+            player.grabbedByTitanId = null;
+            player.grabEscapeProgress = 0;
+            player.invulnerableUntilMs = nowMs + 1250;
+            player.score += 300;
+            this.teamScore += 300;
+            const away = grabbingTitan
+              .getForwardVector()
+              .multiplyScalar(-14.0);
+            away.y = 12.5;
+            player.velocity.copy(away);
+
+            this.broadcastCombatEvent({
+              type: 'grab_escaped',
+              attackerId: player.id,
+              attackerName: player.nickname,
+              targetPlayerId: player.id,
+              targetPlayerName: player.nickname,
+              targetTitanId: grabbingTitan.id,
+              worldPos: player.position.toArray() as [number, number, number],
+              message: `${player.nickname} severed Titan's hand and escaped Grab! (+300)`,
+            });
+            return;
+          }
+        }
+
+        this.integratePlayerKinematics(
+          player,
+          new THREE.Vector3(0, 0, 0),
+          dt,
+          nowMs
+        );
+        return;
+      }
     }
 
     const moveF = clamp(Number(frame.moveForward) || 0, -1, 1);
@@ -804,6 +891,7 @@ export class CoopHunterRoom extends Room {
         player.gas = player.maxGas;
         player.bladeDurability = GAME_CONFIG.player.maxBladeDurability;
         player.spareBlades = GAME_CONFIG.player.maxSpareBlades;
+        player.thunderSpears = GAME_CONFIG.player.maxThunderSpears;
         player.health = Math.min(player.maxHealth, player.health + 45);
         this.broadcastCombatEvent({
           type: 'resupply',
@@ -908,6 +996,8 @@ export class CoopHunterRoom extends Room {
     nowMs: number
   ): void {
     if (player.lifeState !== 'alive') {
+      player.grabbedByTitanId = null;
+      player.grabEscapeProgress = 0;
       player.velocity.y += GAME_CONFIG.physics.gravity * dt;
       player.velocity.x *= 0.9;
       player.velocity.z *= 0.9;
@@ -921,6 +1011,49 @@ export class CoopHunterRoom extends Room {
       if (player.grounded) player.velocity.set(0, 0, 0);
       player.anim = player.lifeState === 'downed' ? 'HitReaction' : 'Death';
       return;
+    }
+
+    // If player is held in a Titan's Grab, keep them pinned at the hand and apply periodic crush damage
+    if (player.grabbedByTitanId) {
+      const grabbingTitan = this.titans.get(player.grabbedByTitanId);
+      if (
+        !grabbingTitan ||
+        grabbingTitan.isDead() ||
+        grabbingTitan.aiState === 'Stunned' ||
+        grabbingTitan.aiState === 'Injured'
+      ) {
+        player.grabbedByTitanId = null;
+        player.grabEscapeProgress = 0;
+        player.invulnerableUntilMs = nowMs + 1000;
+        player.velocity.set(0, 9.5, 0);
+      } else {
+        player.position.copy(grabbingTitan.getGrabHoldWorldPosition());
+        player.velocity.set(0, 0, 0);
+        player.grounded = false;
+        player.health = Math.max(
+          0,
+          player.health - GAME_CONFIG.combat.grabCrushDps * dt
+        );
+        player.grabHoldRemaining -= dt;
+
+        if (player.health <= 0) {
+          grabbingTitan.releaseGrabbedPlayer();
+          player.grabbedByTitanId = null;
+          player.grabEscapeProgress = 0;
+          this.downOrKillPlayer(player);
+          return;
+        }
+        if (player.grabHoldRemaining <= 0) {
+          grabbingTitan.releaseGrabbedPlayer();
+          player.grabbedByTitanId = null;
+          player.grabEscapeProgress = 0;
+          player.invulnerableUntilMs = nowMs + 850;
+          const throwVec = grabbingTitan.getForwardVector().multiplyScalar(15);
+          throwVec.y = 8.0;
+          player.velocity.copy(throwVec);
+        }
+        return;
+      }
     }
 
     // Update active ODM hooks & solve rope constraints
@@ -1261,12 +1394,239 @@ export class CoopHunterRoom extends Room {
     return false;
   }
 
+  private releaseVictimOnTitanBreak(
+    rescuer: ServerPlayerSession,
+    titan: ServerTitan,
+    freedPlayerId: string | null,
+    nowMs: number
+  ): void {
+    const victimId = freedPlayerId || titan.releaseGrabbedPlayer();
+    if (!victimId) return;
+    const victim = this.players.get(victimId);
+    if (!victim || !victim.grabbedByTitanId) return;
+
+    victim.grabbedByTitanId = null;
+    victim.grabEscapeProgress = 0;
+    victim.invulnerableUntilMs = nowMs + 1200;
+    victim.velocity.set(0, 11.0, 0);
+
+    if (rescuer.id !== victim.id) {
+      rescuer.score += 350;
+      rescuer.assists++;
+      this.teamScore += 350;
+    }
+
+    this.broadcastCombatEvent({
+      type: 'grab_escaped',
+      attackerId: rescuer.id,
+      attackerName: rescuer.nickname,
+      targetPlayerId: victim.id,
+      targetPlayerName: victim.nickname,
+      targetTitanId: titan.id,
+      worldPos: victim.position.toArray() as [number, number, number],
+      message:
+        rescuer.id === victim.id
+          ? `${victim.nickname} broke free from Titan Grab!`
+          : `${rescuer.nickname} rescued ${victim.nickname} from Titan Grab! (+350)`,
+    });
+  }
+
+  private handleAuthoritativeThunderSpear(
+    player: ServerPlayerSession,
+    intent: C2S_AttackIntent,
+    nowMs: number
+  ): void {
+    if (player.thunderSpears <= 0 || nowMs < player.nextThunderSpearAllowedMs) {
+      return;
+    }
+
+    player.thunderSpears--;
+    player.nextThunderSpearAllowedMs =
+      nowMs + GAME_CONFIG.combat.thunderSpearCooldown * 1000;
+    player.anim = 'HeavyAttack';
+
+    // If the player was grabbed by a Titan, firing a Thunder Spear immediately blasts them free!
+    if (player.grabbedByTitanId) {
+      const grabbingTitan = this.titans.get(player.grabbedByTitanId);
+      if (grabbingTitan && !grabbingTitan.isDead()) {
+        const res = grabbingTitan.applyDamageFromPlayer(
+          player.id,
+          'RightArm',
+          GAME_CONFIG.combat.thunderSpearBaseDamage
+        );
+        player.damageDealt += GAME_CONFIG.combat.thunderSpearBaseDamage;
+        this.releaseVictimOnTitanBreak(
+          player,
+          grabbingTitan,
+          res.freedPlayerId || player.id,
+          nowMs
+        );
+        return;
+      }
+    }
+
+    const maxRange = GAME_CONFIG.combat.thunderSpearRange;
+    const blastRadius = GAME_CONFIG.combat.thunderSpearBlastRadius;
+    const baseDmg = GAME_CONFIG.combat.thunderSpearBaseDamage;
+    const splashDmg = GAME_CONFIG.combat.thunderSpearSplashDamage;
+
+    const aimOrigin = isValidFiniteVec3(intent.aimOrigin)
+      ? new THREE.Vector3(...intent.aimOrigin)
+      : player.position.clone().add(new THREE.Vector3(0, 1.5, 0));
+    const aimDir = isValidFiniteVec3(intent.aimDir)
+      ? new THREE.Vector3(...intent.aimDir).normalize()
+      : new THREE.Vector3(
+          -Math.sin(intent.aimYaw || player.yaw),
+          0,
+          -Math.cos(intent.aimYaw || player.yaw)
+        ).normalize();
+
+    let directTitan: ServerTitan | null = null;
+    let directZone: TitanZoneType = intent.targetZone || 'Nape';
+    let explosionPos: THREE.Vector3 | null = null;
+
+    if (intent.targetTitanId) {
+      const cand = this.titans.get(intent.targetTitanId);
+      if (
+        cand &&
+        !cand.isDead() &&
+        cand.hurtboxes[directZone].worldPosition.distanceTo(player.position) <=
+          maxRange
+      ) {
+        directTitan = cand;
+        explosionPos = cand.hurtboxes[directZone].worldPosition.clone();
+      }
+    }
+
+    if (!explosionPos) {
+      let bestScore = Infinity;
+      for (const titan of this.titans.values()) {
+        if (titan.isDead()) continue;
+        for (const zone of Object.keys(titan.hurtboxes) as TitanZoneType[]) {
+          const hb = titan.hurtboxes[zone];
+          const dist = player.position.distanceTo(hb.worldPosition);
+          if (dist > maxRange) continue;
+          const toHb = hb.worldPosition.clone().sub(aimOrigin);
+          const proj = toHb.dot(aimDir);
+          if (proj <= 0) continue;
+          const closest = aimOrigin.clone().addScaledVector(aimDir, proj);
+          const radialErr = closest.distanceTo(hb.worldPosition);
+          if (radialErr <= hb.radius * 3.5) {
+            const score =
+              radialErr * 3.0 + dist * 0.15 - (zone === 'Nape' ? 2.5 : 0);
+            if (score < bestScore) {
+              bestScore = score;
+              directTitan = titan;
+              directZone = zone;
+              explosionPos = hb.worldPosition.clone();
+            }
+          }
+        }
+      }
+    }
+
+    if (!explosionPos) {
+      const rayHit = this.physics.castRay(aimOrigin, aimDir, maxRange, false);
+      explosionPos = rayHit
+        ? rayHit.point.clone()
+        : aimOrigin.clone().addScaledVector(aimDir, 40);
+    }
+
+    const allZones: TitanZoneType[] = [
+      'Nape',
+      'Head',
+      'LeftArm',
+      'RightArm',
+      'LeftLeg',
+      'RightLeg',
+    ];
+
+    for (const titan of this.titans.values()) {
+      if (titan.isDead()) continue;
+      const isDirect = directTitan && titan.id === directTitan.id;
+      const orderedZones: TitanZoneType[] = isDirect
+        ? [directZone, ...allZones.filter((z) => z !== directZone)]
+        : allZones;
+
+      let hitTitan = false;
+      for (const zone of orderedZones) {
+        if (titan.isDead()) break;
+        const hb = titan.hurtboxes[zone];
+        const dist = hb.worldPosition.distanceTo(explosionPos);
+        const isPrimary = isDirect && zone === directZone;
+
+        // Nape execution requires direct Nape targeting on the primary Titan (or direct proximity <= 1.8m)
+        if (zone === 'Nape' && !isPrimary && (isDirect || dist > 1.8)) {
+          continue;
+        }
+
+        if (isPrimary || dist <= blastRadius + hb.radius) {
+          const dmg = isPrimary ? baseDmg : splashDmg;
+          const res = titan.applyDamageFromPlayer(player.id, zone, dmg);
+          player.damageDealt += dmg;
+          hitTitan = true;
+
+          if (res.freedPlayerId) {
+            this.releaseVictimOnTitanBreak(
+              player,
+              titan,
+              res.freedPlayerId,
+              nowMs
+            );
+          }
+
+          if (res.killed) {
+            this.onServerTitanKilled(titan, player, dmg, 2.2);
+            break;
+          } else if (res.limbBroken) {
+            player.score += 350;
+            this.teamScore += 350;
+          }
+        }
+      }
+
+      if (hitTitan && !titan.isDead()) {
+        if (titan.grabbedPlayerId) {
+          this.releaseVictimOnTitanBreak(
+            player,
+            titan,
+            titan.grabbedPlayerId,
+            nowMs
+          );
+        }
+        if (titan.aiState !== 'Injured') {
+          titan.aiState = 'Stunned';
+          titan.anim = 'Stagger';
+          titan.stateTimer = Math.max(titan.stateTimer, 3.5);
+          titan.velocity.set(0, 0, 0);
+        }
+      }
+    }
+
+    this.broadcastCombatEvent({
+      type: 'thunder_spear_exploded',
+      attackerId: player.id,
+      attackerName: player.nickname,
+      targetTitanId: directTitan?.id,
+      zone: directZone,
+      damage: baseDmg,
+      worldPos: explosionPos.toArray() as [number, number, number],
+      message: `${player.nickname} detonated a THUNDER SPEAR! (${baseDmg} BLAST DMG)`,
+    });
+  }
+
   private handleAuthoritativeAttack(
     player: ServerPlayerSession,
     intent: C2S_AttackIntent
   ): void {
     const nowMs = Date.now();
     if (this.phase !== 'playing' || player.lifeState !== 'alive') return;
+
+    if (intent.weaponType === 'thunder_spear') {
+      this.handleAuthoritativeThunderSpear(player, intent, nowMs);
+      return;
+    }
+
     if (nowMs < player.nextAttackAllowedMs) return;
 
     const isHeavy = Boolean(intent.isHeavy);
@@ -1302,6 +1662,8 @@ export class CoopHunterRoom extends Room {
     );
     const speedAllowance = Math.min(2.2, player.velocity.length() * 0.065);
     const effectiveReach = GAME_CONFIG.combat.bladeReach * 1.15 + speedAllowance;
+    const maxHitsAllowed = isHeavy ? 2 : 1;
+    let hitsDealt = 0;
 
     for (const titan of this.titans.values()) {
       if (titan.isDead()) continue;
@@ -1319,6 +1681,7 @@ export class CoopHunterRoom extends Room {
       const uniqueZones = Array.from(new Set(priorityZones));
 
       for (const zone of uniqueZones) {
+        if (titan.isDead()) break;
         const hb = titan.hurtboxes[zone];
         const currentPos = hb.worldPosition;
         const histPos = hist.hurtboxPositions[zone];
@@ -1366,7 +1729,9 @@ export class CoopHunterRoom extends Room {
               worldPos: currentPos.toArray() as [number, number, number],
               message: `${player.nickname}'s strike glanced off frontal collar! Attack Nape from behind!`,
             });
-            return;
+            hitsDealt++;
+            if (hitsDealt >= maxHitsAllowed) return;
+            continue;
           }
 
           const res = titan.applyDamageFromPlayer(
@@ -1375,6 +1740,15 @@ export class CoopHunterRoom extends Room {
             dmgOut.damage
           );
           player.damageDealt += dmgOut.damage;
+
+          if (res.freedPlayerId) {
+            this.releaseVictimOnTitanBreak(
+              player,
+              titan,
+              res.freedPlayerId,
+              nowMs
+            );
+          }
 
           if (res.killed) {
             this.onServerTitanKilled(
@@ -1407,10 +1781,11 @@ export class CoopHunterRoom extends Room {
               damage: dmgOut.damage,
               speedMult: dmgOut.velocityMultiplier,
               worldPos: currentPos.toArray() as [number, number, number],
-              message: `${player.nickname} struck Titan ${zone} (${dmgOut.damage} DMG)`,
+              message: `${player.nickname} ${isHeavy ? 'SPIN-SLASHED' : 'struck'} Titan ${zone} (${dmgOut.damage} DMG)`,
             });
           }
-          return;
+          hitsDealt++;
+          if (hitsDealt >= maxHitsAllowed) return;
         }
       }
     }
@@ -1521,7 +1896,49 @@ export class CoopHunterRoom extends Room {
         continue;
       }
 
-      if (nowMs <= player.dodgeUntilMs || nowMs <= player.invulnerableUntilMs) {
+      if (
+        nowMs <= player.dodgeUntilMs ||
+        nowMs <= player.invulnerableUntilMs ||
+        player.grabbedByTitanId !== null
+      ) {
+        continue;
+      }
+
+      // If this is a Titan Grab attack and the Titan's hand is free, capture the player!
+      if (
+        attackHit.type === 'grab' &&
+        attackHit.titan.grabbedPlayerId === null
+      ) {
+        const initDmg = Math.max(12, Math.round(attackHit.damage * 0.35));
+        player.health = Math.max(0, player.health - initDmg);
+        player.leftHook.active = false;
+        player.rightHook.active = false;
+        player.isBoosting = false;
+        player.grounded = false;
+        player.reviveHoldActive = false;
+
+        if (player.health <= 0) {
+          this.downOrKillPlayer(player);
+        } else {
+          player.grabbedByTitanId = attackHit.titan.id;
+          player.grabEscapeProgress = 0;
+          player.grabHoldRemaining = GAME_CONFIG.combat.grabHoldDuration;
+          attackHit.titan.grabbedPlayerId = player.id;
+          attackHit.titan.grabHoldTimer = GAME_CONFIG.combat.grabHoldDuration;
+          player.position.copy(attackHit.titan.getGrabHoldWorldPosition());
+          player.velocity.set(0, 0, 0);
+          player.anim = 'HitReaction';
+
+          this.broadcastCombatEvent({
+            type: 'player_grabbed',
+            targetPlayerId: player.id,
+            targetPlayerName: player.nickname,
+            targetTitanId: attackHit.titan.id,
+            damage: initDmg,
+            worldPos: player.position.toArray() as [number, number, number],
+            message: `${player.nickname} is GRABBED BY TITAN! Mash [F]/[SPACE] or sever its arm!`,
+          });
+        }
         continue;
       }
 
@@ -1698,6 +2115,9 @@ export class CoopHunterRoom extends Room {
         maxGas: p.maxGas,
         bladeDurability: Math.round(p.bladeDurability),
         spareBlades: p.spareBlades,
+        thunderSpears: p.thunderSpears,
+        grabbedByTitanId: p.grabbedByTitanId,
+        grabEscapeProgress: Math.round(p.grabEscapeProgress * 100) / 100,
         leftHook: this.serializeHook(p.leftHook),
         rightHook: this.serializeHook(p.rightHook),
         downedTimer: Math.round(p.downedTimer * 10) / 10,

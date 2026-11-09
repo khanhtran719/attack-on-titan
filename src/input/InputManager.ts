@@ -9,6 +9,7 @@ export interface InputState {
   rightGrappleJustPressed: boolean;
   boostHeld: boolean;
   attackJustPressed: boolean;
+  thunderSpearJustPressed: boolean;
   dodgeJustPressed: boolean;
   lockTargetJustPressed: boolean;
   cycleZoneDelta: number;
@@ -154,6 +155,7 @@ export class InputManager {
       boostHeld:
         this.keysDown.has('ShiftLeft') || this.keysDown.has('ShiftRight'),
       attackJustPressed: this.keysJustPressed.has('KeyF'),
+      thunderSpearJustPressed: this.keysJustPressed.has('KeyV'),
       dodgeJustPressed: this.keysJustPressed.has('KeyQ'),
       lockTargetJustPressed: this.keysJustPressed.has('Tab'),
       cycleZoneDelta: this.wheelDelta + cycleKeyDelta,

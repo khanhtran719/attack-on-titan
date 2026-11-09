@@ -52,6 +52,9 @@ export interface NetPlayerState {
   maxGas: number;
   bladeDurability: number;
   spareBlades: number;
+  thunderSpears: number;
+  grabbedByTitanId: string | null;
+  grabEscapeProgress: number;
   leftHook: NetHookState;
   rightHook: NetHookState;
   downedTimer: number;
@@ -82,6 +85,7 @@ export interface NetTitanState {
   aiState: TitanAIState;
   anim: TitanAnimName;
   targetPlayerId: string | null;
+  grabbedPlayerId: string | null;
   hurtboxes: Record<TitanZoneType, NetTitanHurtbox>;
 }
 
@@ -139,12 +143,16 @@ export interface C2S_InputFrame {
   rightGrappleTarget?: [number, number, number] | null;
   lockedTitanId: string | null;
   lockedZone: TitanZoneType;
+  escapePressed?: boolean;
 }
 
 export interface C2S_AttackIntent {
   seq: number;
   isHeavy: boolean;
+  weaponType?: 'blade' | 'thunder_spear';
   aimYaw: number;
+  aimOrigin?: [number, number, number];
+  aimDir?: [number, number, number];
   targetTitanId: string | null;
   targetZone: TitanZoneType;
   clientRttMs: number;
@@ -176,7 +184,10 @@ export interface S2C_CombatEvent {
     | 'player_downed'
     | 'player_revived'
     | 'perfect_dodge'
-    | 'resupply';
+    | 'resupply'
+    | 'thunder_spear_exploded'
+    | 'player_grabbed'
+    | 'grab_escaped';
   attackerId?: string;
   attackerName?: string;
   targetTitanId?: string;

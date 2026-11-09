@@ -1,0 +1,23 @@
+# =============================================================================
+# Standalone Production Dockerfile — Multiplayer Server (titan-hunter-server:prod)
+# Build: docker build -f Dockerfile.server -t titan-hunter-server:prod .
+# Run:   docker run -d --name titan-hunter-server -p 2567:2567 -e NODE_ENV=production titan-hunter-server:prod
+# =============================================================================
+FROM node:22-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm ci
+
+COPY . .
+
+ENV NODE_ENV=production
+ENV PORT=2567
+
+EXPOSE 2567
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:2567/healthz || exit 1
+
+CMD ["npm", "run", "server"]

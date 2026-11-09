@@ -1,6 +1,6 @@
 # TITAN HUNTER 3D — PROJECT PROGRESS REPORT
 
-## 1. Completed Milestones (Vertical Slice — Phases 1 to 6)
+## 1. Completed Milestones (Vertical Slice — Phases 1 to 7)
 
 ### Phase 1 — Playable Movement & 3D World (`COMPLETED`)
 - [x] **Project Architecture:** Vite + TypeScript + Three.js + Rapier 3D (`@dimforge/rapier3d-compat`) + Vitest setup with fixed-timestep physics (`60 Hz`) and decoupled render loop.
@@ -46,15 +46,29 @@
   - Multi-player threat/aggro target selection & dynamic aggro switching (`ServerTitan`).
   - Bounded 24-tick (`400ms`) hitbox history for lag-compensated strike validation, anti-double-kill protection, and Kill + Assist attribution (`damageContributors`).
   - Co-op **Downed & Revive** (`Hold E` within `5m` for `2.2s` to revive downed teammates to `50% HP`; respawn fallen teammates on next wave), Team Ping (`KeyG`), Quick Chat (`Digit1`–`Digit4`), and pause/hit-stop isolation.
-- [x] **Multi-Client Verification:** 12 Vitest unit & integration tests (`tests/gameplay.test.ts` + `tests/multiplayer.test.ts`) + 4-client multi-browser Playwright E2E verification across 50/100/200ms simulated latency (`0 console/page errors`).
+- [x] **Multi-Client Verification:** 19 Vitest unit & integration tests (`tests/gameplay.test.ts` + `tests/multiplayer.test.ts`) + multi-browser Playwright E2E verification across 50/100/200ms simulated latency (`0 console/page errors`).
+
+### Phase 7 — Thunder Spears, Levi Spin-Slash & Titan Grab Escape / Teammate Rescue (`COMPLETED`)
+- [x] **Rocket-Propelled Thunder Spears (`KeyV`):**
+  - Players carry `4` Thunder Spears (`maxThunderSpears: 4`), refilled at Supply Depots (`KeyR`).
+  - Launches a high-speed rocket spear projectile (`95 m/s` with exhaust trail & shockwave fireball VFX) at the locked Titan hurtbox or reticle aim target (`<= 75m` range).
+  - Deals `580` armor-piercing direct damage + `340` AoE splash damage (`6.5m` blast radius), shattering limbs, staggering Titans (`Stunned`), and executing Napes on direct Nape hits.
+- [x] **Levi Aerial Spin-Slash (`KeyF` while Boosting / High Velocity):**
+  - Multi-rotation 360° dual-blade buzzsaw spin (`HeavyAttack`) with triple golden/crimson spiral slash arcs (`VFXManager.spawnSlashArc`) capable of slicing through up to `2` anatomical zones on a Titan in a single pass.
+- [x] **Titan Grab Capture, Counter-Slash Escape & Co-op Teammate Rescue:**
+  - When a Titan's `Grab` attack connects, the Titan captures and pins the player in its hand (`grabbedByTitanId` / `grabbedPlayerId`) while dealing periodic crush damage (`10 HP/s`).
+  - **Self-Escape Counter:** Mashing `[F]` / `[SPACE]` (`3` presses) or firing `[V]` severs the Titan's grabbing hand (`RightArm` crippled + Titan `Stunned`), launching the player free with an upward backflip and `+300` bonus score.
+  - **Co-op Teammate Rescue:** Any teammate who cripples a limb, stuns the Head, kills the Titan, or hits it with a Thunder Spear while it holds an ally immediately frees the grabbed teammate and earns `+350` Rescue & Assist points.
+- [x] **Production Docker & Reverse Proxy (`Dockerfile.client`, `Dockerfile.server`, `docker/nginx.conf`):**
+  - Standalone client & server production images (`npm run docker:build:prod`) with Nginx reverse-proxying `/api/`, `/matchmake/`, and Colyseus room WebSockets on port `80`/`443`.
 
 ---
 
-## 2. Post-Multiplayer Roadmap (Future Enhancements)
+## 2. Next Roadmap Phases (Phases 8 to 10)
 
-- [ ] **Additional Co-op Operations:** Escort Supply Wagon, Defend the Outer Gatehouse (Shared Wall Integrity bar), and 4-Player Boss Raid (Armored / Colossal Titan).
-- [ ] **Voice Chat / WebRTC Spatial Audio:** Optional proximity voice chat for squad coordination.
-- [ ] **Equipment Upgrade Tree:** Spend mission score to upgrade Gas Cylinder Capacity, Wire Range, Anchor Reel Torque, and Mono-Blade Durability.
+- [ ] **Phase 8 — Boss Titans & Co-op Raid Objectives:** Armored Titan (requires Thunder Spears to crack armor plates), Jaw Titan (high-speed rooftop leaper), and Defend the Outer Gatehouse / Escort Supply Wagon missions.
+- [ ] **Phase 9 — Character Progression & Equipment Upgrade Tree:** Spend mission score to upgrade Gas Cylinder Capacity, Wire Range, Reel-In Torque, Mono-Blade Durability, and Cape Cosmetics.
+- [ ] **Phase 10 — Expanded District Map, Weather & Day/Night Atmosphere:** Expanded `500m × 500m` district with Giant Forest zone, Sunset/Night flares (`Signal Flares`), and spatial audio.
 
 ---
 

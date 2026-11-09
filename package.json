@@ -11,7 +11,15 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "generate-assets": "node scripts/generate-glb-assets.mjs"
+    "generate-assets": "node scripts/generate-glb-assets.mjs",
+    "docker:build:client": "docker build --target prod -t khanhtrn2608/aot-client:prod .",
+    "docker:build:server": "docker build --target server -t khanhtrn2608/aot-server:prod .",
+    "docker:build:prod": "npm run docker:build:server && npm run docker:build:client",
+    "docker:net": "docker network inspect titan-net >/dev/null 2>&1 || docker network create titan-net",
+    "docker:run:server": "npm run docker:net && docker run -d --name titan-hunter-server --network titan-net --restart unless-stopped -p 2567:2567 -e NODE_ENV=production khanhtrn2608/aot-server:prod",
+    "docker:run:client": "npm run docker:net && docker run -d --name titan-hunter-client --network titan-net --restart unless-stopped -p 8080:80 -e SERVER_UPSTREAM=titan-hunter-server:2567 khanhtrn2608/aot-client:prod",
+    "docker:run:prod": "npm run docker:run:server && npm run docker:run:client",
+    "docker:stop:prod": "docker rm -f titan-hunter-client titan-hunter-server"
   },
   "dependencies": {
     "@colyseus/core": "^0.18.26",

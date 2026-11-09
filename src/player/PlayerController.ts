@@ -35,6 +35,13 @@ export class PlayerController {
   public maxBladeDurability: number = GAME_CONFIG.player.maxBladeDurability;
   public spareBlades: number = GAME_CONFIG.player.maxSpareBlades;
   public maxSpareBlades: number = GAME_CONFIG.player.maxSpareBlades;
+  public thunderSpears: number = GAME_CONFIG.player.maxThunderSpears;
+  public maxThunderSpears: number = GAME_CONFIG.player.maxThunderSpears;
+
+  // Titan Grabbed & Escape Counter state
+  public grabbedByTitanId: string | null = null;
+  public grabEscapeProgress = 0;
+  public grabHoldRemaining = 0;
 
   // Dodge / Invulnerability state
   public dodgeTimer = 0;
@@ -71,6 +78,10 @@ export class PlayerController {
     this.gas = this.maxGas;
     this.bladeDurability = this.maxBladeDurability;
     this.spareBlades = this.maxSpareBlades;
+    this.thunderSpears = this.maxThunderSpears;
+    this.grabbedByTitanId = null;
+    this.grabEscapeProgress = 0;
+    this.grabHoldRemaining = 0;
 
     this.dodgeTimer = 0;
     this.dodgeCooldownTimer = 0;
@@ -135,6 +146,56 @@ export class PlayerController {
     return true;
   }
 
+  /**
+   * Captures the player in a Titan's Grab hold, allowing them to mash [F] or [SPACE]
+   * (or be rescued by a teammate) before the crush completes.
+   */
+  public captureByTitanGrab(
+    titan: TitanEntity,
+    initialDamage: number,
+    odm: ODMSystem,
+    audio: AudioManager,
+    onPerfectDodge?: () => void
+  ): 'perfect_dodge' | 'ignored' | 'grabbed' | 'killed' {
+    if (this.isDead()) return 'ignored';
+
+    if (this.isInPerfectDodgeWindow()) {
+      this.totalPerfectDodges++;
+      this.invulnerableTimer = 0.7;
+      onPerfectDodge?.();
+      return 'perfect_dodge';
+    }
+
+    if (
+      this.dodgeTimer > 0 ||
+      this.invulnerableTimer > 0 ||
+      this.grabbedByTitanId !== null
+    ) {
+      return 'ignored';
+    }
+
+    odm.releaseAll();
+    this.isBoosting = false;
+    this.grounded = false;
+    this.health = Math.max(0, this.health - initialDamage);
+    audio.playBladeImpact(false, false);
+
+    if (this.health <= 0) {
+      this.animator.playState('Death', 0.12, true);
+      return 'killed';
+    }
+
+    this.grabbedByTitanId = titan.id;
+    this.grabEscapeProgress = 0;
+    this.grabHoldRemaining = GAME_CONFIG.combat.grabHoldDuration;
+    titan.grabbedPlayerId = 'local';
+    titan.grabHoldTimer = GAME_CONFIG.combat.grabHoldDuration;
+    this.position.copy(titan.getGrabHoldWorldPosition());
+    this.velocity.set(0, 0, 0);
+    this.animator.playState('HitReaction', 0.1, true);
+    return 'grabbed';
+  }
+
   public consumeBladeOnHit(glanced: boolean): void {
     const loss = glanced
       ? GAME_CONFIG.combat.bladeDurabilityLossHardHit
@@ -157,6 +218,7 @@ export class PlayerController {
         this.gas = this.maxGas;
         this.bladeDurability = this.maxBladeDurability;
         this.spareBlades = this.maxSpareBlades;
+        this.thunderSpears = this.maxThunderSpears;
         this.health = Math.min(this.maxHealth, this.health + 45);
         audio.playResupply();
         return { resuppliedAtStation: true, reloadedBlades: true };
@@ -205,6 +267,8 @@ export class PlayerController {
     }
 
     if (this.isDead()) {
+      this.grabbedByTitanId = null;
+      this.grabEscapeProgress = 0;
       // Apply gravity so character falls to ground if killed mid-air
       this.velocity.y += GAME_CONFIG.physics.gravity * dt;
       this.velocity.x *= 0.92;
@@ -220,6 +284,95 @@ export class PlayerController {
         this.velocity.set(0, 0, 0);
       }
       return;
+    }
+
+    // Handle active Titan Grab & Escape Counter (Single-Player & Local Prediction)
+    if (this.grabbedByTitanId) {
+      const grabbingTitan = titans.find((t) => t.id === this.grabbedByTitanId);
+      if (
+        !grabbingTitan ||
+        grabbingTitan.isDead() ||
+        grabbingTitan.aiState === 'Stunned' ||
+        grabbingTitan.aiState === 'Injured'
+      ) {
+        // Released because Titan was stunned, crippled, or killed!
+        this.grabbedByTitanId = null;
+        this.grabEscapeProgress = 0;
+        this.invulnerableTimer = 1.0;
+        this.velocity.set(0, 9.5, 0);
+      } else {
+        odm.releaseAll();
+        this.isBoosting = false;
+        this.grounded = false;
+        this.position.copy(grabbingTitan.getGrabHoldWorldPosition());
+        this.velocity.set(0, 0, 0);
+        physics.setPlayerPosition(this.position);
+
+        // Periodic crush damage while held
+        this.health = Math.max(
+          0,
+          this.health - GAME_CONFIG.combat.grabCrushDps * dt
+        );
+        if (this.health <= 0) {
+          grabbingTitan.releaseGrabbedPlayer();
+          this.grabbedByTitanId = null;
+          this.grabEscapeProgress = 0;
+          this.animator.playState('Death', 0.12, true);
+          return;
+        }
+
+        // Mash [F] (Attack) or [SPACE] (Jump) or [V] (Thunder Spear) to sever Titan's fingers!
+        if (
+          input.attackJustPressed ||
+          input.jumpPressed ||
+          input.thunderSpearJustPressed
+        ) {
+          const step = input.thunderSpearJustPressed
+            ? 1.0
+            : GAME_CONFIG.combat.grabEscapeStep;
+          this.grabEscapeProgress = Math.min(
+            1.0,
+            this.grabEscapeProgress + step
+          );
+          audio.playSwordSlash(true);
+          this.animator.playState('HeavyAttack', 0.06, true);
+
+          if (this.grabEscapeProgress >= 1.0) {
+            // Break free by severing Titan's RightArm!
+            grabbingTitan.applyZoneDamage('RightArm', 999);
+            grabbingTitan.aiState = 'Stunned';
+            grabbingTitan.stateTimer = 4.0;
+            grabbingTitan.playAnimation('Stagger', 0.15, true);
+            grabbingTitan.releaseGrabbedPlayer();
+
+            this.grabbedByTitanId = null;
+            this.grabEscapeProgress = 0;
+            this.invulnerableTimer = 1.25;
+            const away = grabbingTitan
+              .getForwardVector()
+              .multiplyScalar(-14.0);
+            away.y = 12.5;
+            this.velocity.copy(away);
+            audio.playGrabEscape();
+          }
+        }
+
+        this.grabHoldRemaining -= dt;
+        if (this.grabbedByTitanId && this.grabHoldRemaining <= 0) {
+          // Hold timer expired -> throw player away
+          grabbingTitan.releaseGrabbedPlayer();
+          this.grabbedByTitanId = null;
+          this.grabEscapeProgress = 0;
+          this.invulnerableTimer = 0.85;
+          const throwVec = grabbingTitan.getForwardVector().multiplyScalar(15);
+          throwVec.y = 8.0;
+          this.velocity.copy(throwVec);
+        }
+
+        this.rig.rootGroup.position.copy(this.position);
+        this.rig.rootGroup.rotation.y = this.yaw;
+        return;
+      }
     }
 
     // Compute camera-relative directional vectors

@@ -63,20 +63,38 @@ export class NetworkClient {
   ) => void;
 
   constructor(customHost?: string) {
-    const host =
-      customHost ||
-      (typeof window !== 'undefined' && window.location.hostname
-        ? `${window.location.hostname}:2567`
-        : 'localhost:2567');
-    this.serverHttpUrl = `http://${host}`;
-    this.serverWsUrl = `ws://${host}`;
-    this.client = new Client(this.serverWsUrl);
+    const envHost =
+      (typeof import.meta !== 'undefined' &&
+        (import.meta as any).env?.VITE_SERVER_HOST) ||
+      '';
+    const defaultHost =
+      typeof window !== 'undefined' && window.location.hostname
+        ? window.location.port === '5173' || window.location.port === '4173'
+          ? `${window.location.hostname}:2567`
+          : window.location.host
+        : 'localhost:2567';
+    const rawHost = (customHost || envHost || defaultHost).trim();
+    this.serverHttpUrl = '';
+    this.serverWsUrl = '';
+    this.client = null as unknown as Client;
+    this.setServerHost(rawHost);
   }
 
   public setServerHost(hostWithPort: string): void {
-    const clean = hostWithPort.replace(/^https?:\/\//, '').replace(/^wss?:\/\//, '');
-    this.serverHttpUrl = `http://${clean}`;
-    this.serverWsUrl = `ws://${clean}`;
+    const raw = (hostWithPort || '').trim();
+    const isSecure =
+      raw.startsWith('https://') ||
+      raw.startsWith('wss://') ||
+      (typeof window !== 'undefined' &&
+        window.location.protocol === 'https:' &&
+        !raw.startsWith('http://') &&
+        !raw.startsWith('ws://'));
+    const clean = raw
+      .replace(/^https?:\/\//, '')
+      .replace(/^wss?:\/\//, '')
+      .replace(/\/+$/, '');
+    this.serverHttpUrl = `${isSecure ? 'https' : 'http'}://${clean}`;
+    this.serverWsUrl = `${isSecure ? 'wss' : 'ws'}://${clean}`;
     this.client = new Client(this.serverWsUrl);
   }
 

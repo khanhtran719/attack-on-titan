@@ -16,9 +16,19 @@ interface SlashArcItem {
   maxAge: number;
 }
 
+interface ThunderSpearProjectileItem {
+  group: THREE.Group;
+  origin: THREE.Vector3;
+  target: THREE.Vector3;
+  elapsed: number;
+  duration: number;
+  onDetonate?: () => void;
+}
+
 export class VFXManager {
   private particlePool: ObjectPool<ParticleItem>;
   private slashArcPool: ObjectPool<SlashArcItem>;
+  private activeSpears: ThunderSpearProjectileItem[] = [];
 
   constructor(private scene: THREE.Scene) {
     const sphereGeo = new THREE.IcosahedronGeometry(0.22, 1);
@@ -105,20 +115,99 @@ export class VFXManager {
     yaw: number,
     isHeavy: boolean
   ): void {
-    const arc = this.slashArcPool.acquire();
-    arc.mesh.visible = true;
-    arc.mesh.position.copy(centerPos);
-    arc.mesh.position.y += 1.15;
-    arc.mesh.rotation.set(
-      (Math.random() - 0.5) * 0.45,
-      yaw,
-      isHeavy ? 0.15 : -0.35
-    );
-    const mat = arc.mesh.material as THREE.MeshBasicMaterial;
-    mat.color.setHex(isHeavy ? 0xfbbf24 : 0x38bdf8);
-    mat.opacity = 0.9;
-    arc.age = 0;
-    arc.maxAge = isHeavy ? 0.32 : 0.2;
+    const ringCount = isHeavy ? 3 : 1;
+    for (let i = 0; i < ringCount; i++) {
+      const arc = this.slashArcPool.acquire();
+      arc.mesh.visible = true;
+      arc.mesh.position.copy(centerPos);
+      arc.mesh.position.y += 1.0 + i * 0.25;
+      arc.mesh.rotation.set(
+        (Math.random() - 0.5) * 0.45 + i * 0.22,
+        yaw + i * 2.1,
+        isHeavy ? 0.15 + i * 0.2 : -0.35
+      );
+      const mat = arc.mesh.material as THREE.MeshBasicMaterial;
+      mat.color.setHex(
+        isHeavy ? (i % 2 === 0 ? 0xfbbf24 : 0xf43f5e) : 0x38bdf8
+      );
+      mat.opacity = 0.92;
+      arc.age = 0;
+      arc.maxAge = isHeavy ? 0.36 : 0.2;
+    }
+  }
+
+  public spawnThunderSpearProjectile(
+    origin: THREE.Vector3,
+    targetPos: THREE.Vector3,
+    onDetonate?: () => void
+  ): void {
+    const group = new THREE.Group();
+    const shaftGeo = new THREE.CylinderGeometry(0.06, 0.08, 1.4, 8);
+    shaftGeo.rotateX(Math.PI / 2);
+    const shaftMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 });
+    const shaft = new THREE.Mesh(shaftGeo, shaftMat);
+    group.add(shaft);
+
+    const flameGeo = new THREE.ConeGeometry(0.16, 0.55, 8);
+    flameGeo.rotateX(-Math.PI / 2);
+    flameGeo.translate(0, 0, -0.85);
+    const flameMat = new THREE.MeshBasicMaterial({ color: 0xf97316 });
+    const flame = new THREE.Mesh(flameGeo, flameMat);
+    group.add(flame);
+
+    group.position.copy(origin);
+    group.lookAt(targetPos);
+    this.scene.add(group);
+
+    const dist = Math.max(1.0, origin.distanceTo(targetPos));
+    const duration = Math.min(0.45, Math.max(0.06, dist / 95.0));
+
+    this.activeSpears.push({
+      group,
+      origin: origin.clone(),
+      target: targetPos.clone(),
+      elapsed: 0,
+      duration,
+      onDetonate,
+    });
+  }
+
+  public spawnThunderSpearExplosion(worldPos: THREE.Vector3): void {
+    // 1. High-energy orange/gold fireball & crimson shrapnel
+    for (let i = 0; i < 28; i++) {
+      const p = this.particlePool.acquire();
+      p.mesh.visible = true;
+      p.mesh.position.copy(worldPos);
+      const mat = p.mesh.material as THREE.MeshBasicMaterial;
+      mat.color.setHex(
+        i % 3 === 0 ? 0xfef08a : i % 3 === 1 ? 0xf97316 : 0xef4444
+      );
+      mat.opacity = 0.95;
+
+      p.velocity.set(
+        (Math.random() - 0.5) * 24,
+        (Math.random() - 0.2) * 20,
+        (Math.random() - 0.5) * 24
+      );
+      p.age = 0;
+      p.maxAge = 0.55 + Math.random() * 0.25;
+      p.startScale = 1.6;
+      p.endScale = 4.2;
+      p.mesh.scale.setScalar(p.startScale);
+    }
+
+    // 2. Shockwave rings
+    for (let i = 0; i < 2; i++) {
+      const arc = this.slashArcPool.acquire();
+      arc.mesh.visible = true;
+      arc.mesh.position.copy(worldPos);
+      arc.mesh.rotation.set(i * 0.8, Math.random() * Math.PI, i * -0.6);
+      const mat = arc.mesh.material as THREE.MeshBasicMaterial;
+      mat.color.setHex(0xfde047);
+      mat.opacity = 0.95;
+      arc.age = 0;
+      arc.maxAge = 0.38;
+    }
   }
 
   public spawnImpactBurst(
@@ -204,10 +293,45 @@ export class VFXManager {
       const mat = arc.mesh.material as THREE.MeshBasicMaterial;
       mat.opacity = (1 - t) * 0.85;
     }
+
+    for (let i = this.activeSpears.length - 1; i >= 0; i--) {
+      const sp = this.activeSpears[i];
+      sp.elapsed += dt;
+      const t = Math.min(1, sp.elapsed / sp.duration);
+      sp.group.position.lerpVectors(sp.origin, sp.target, t);
+
+      // Trail rocket exhaust puff
+      const exhaust = this.particlePool.acquire();
+      exhaust.mesh.visible = true;
+      exhaust.mesh.position.copy(sp.group.position);
+      const eMat = exhaust.mesh.material as THREE.MeshBasicMaterial;
+      eMat.color.setHex(0xfb923c);
+      eMat.opacity = 0.8;
+      exhaust.velocity.set(
+        (Math.random() - 0.5) * 3,
+        (Math.random() - 0.5) * 3,
+        (Math.random() - 0.5) * 3
+      );
+      exhaust.age = 0;
+      exhaust.maxAge = 0.22;
+      exhaust.startScale = 0.65;
+      exhaust.endScale = 1.8;
+
+      if (t >= 1) {
+        this.scene.remove(sp.group);
+        this.activeSpears.splice(i, 1);
+        this.spawnThunderSpearExplosion(sp.target);
+        sp.onDetonate?.();
+      }
+    }
   }
 
   public clearAll(): void {
     this.particlePool.releaseAll();
     this.slashArcPool.releaseAll();
+    for (const sp of this.activeSpears) {
+      this.scene.remove(sp.group);
+    }
+    this.activeSpears = [];
   }
 }

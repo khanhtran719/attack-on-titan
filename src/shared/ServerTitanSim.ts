@@ -53,6 +53,8 @@ export class ServerTitan {
   public stateTimer = 0;
   public patrolTarget: THREE.Vector3 = new THREE.Vector3();
   public targetPlayerId: string | null = null;
+  public grabbedPlayerId: string | null = null;
+  public grabHoldTimer = 0;
   public attackHitDealtInCurrentSwing = false;
   public deathFadeTimer = 0;
   public readyForRemoval = false;
@@ -141,6 +143,22 @@ export class ServerTitan {
 
   public getForwardVector(): THREE.Vector3 {
     return new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
+  }
+
+  public getGrabHoldWorldPosition(): THREE.Vector3 {
+    const rightArm = this.hurtboxes.RightArm.worldPosition;
+    const forward = this.getForwardVector();
+    return rightArm
+      .clone()
+      .addScaledVector(forward, 1.35)
+      .add(new THREE.Vector3(0, 0.35, 0));
+  }
+
+  public releaseGrabbedPlayer(): string | null {
+    const prev = this.grabbedPlayerId;
+    this.grabbedPlayerId = null;
+    this.grabHoldTimer = 0;
+    return prev;
   }
 
   public areBothArmsDisabled(): boolean {
@@ -269,6 +287,7 @@ export class ServerTitan {
     limbBroken: boolean;
     stunned: boolean;
     remainingHp: number;
+    freedPlayerId: string | null;
   } {
     if (this.aiState === 'Dead') {
       return {
@@ -276,6 +295,7 @@ export class ServerTitan {
         limbBroken: false,
         stunned: false,
         remainingHp: 0,
+        freedPlayerId: null,
       };
     }
 
@@ -298,11 +318,13 @@ export class ServerTitan {
         this.anim = 'Death';
         this.stateTimer = 0;
         this.velocity.set(0, 0, 0);
+        const freed = this.releaseGrabbedPlayer();
         return {
           killed: true,
           limbBroken: false,
           stunned: false,
           remainingHp: 0,
+          freedPlayerId: freed,
         };
       }
       return {
@@ -310,6 +332,7 @@ export class ServerTitan {
         limbBroken: false,
         stunned: false,
         remainingHp: hb.hp,
+        freedPlayerId: null,
       };
     }
 
@@ -321,11 +344,13 @@ export class ServerTitan {
         this.anim = 'Injured';
         this.stateTimer = cfg.injuredDuration;
         this.velocity.set(0, 0, 0);
+        const freed = this.releaseGrabbedPlayer();
         return {
           killed: false,
           limbBroken: true,
           stunned: false,
           remainingHp: 0,
+          freedPlayerId: freed,
         };
       } else if (zone === 'Head') {
         hb.disabledTimer = cfg.stunnedDuration;
@@ -333,24 +358,28 @@ export class ServerTitan {
         this.anim = 'Stagger';
         this.stateTimer = cfg.stunnedDuration;
         this.velocity.set(0, 0, 0);
+        const freed = this.releaseGrabbedPlayer();
         return {
           killed: false,
           limbBroken: true,
           stunned: true,
           remainingHp: 0,
+          freedPlayerId: freed,
         };
       } else if (zone === 'LeftArm' || zone === 'RightArm') {
         hb.disabledTimer = 15.0;
-        if (this.aiState === 'Attack' || this.aiState === 'Grab') {
+        if (this.aiState === 'Attack' || this.aiState === 'Grab' || this.grabbedPlayerId) {
           this.aiState = 'Stunned';
           this.anim = 'Stagger';
           this.stateTimer = 4.0;
         }
+        const freed = this.releaseGrabbedPlayer();
         return {
           killed: false,
           limbBroken: true,
           stunned: this.aiState === 'Stunned',
           remainingHp: 0,
+          freedPlayerId: freed,
         };
       }
     }
@@ -360,6 +389,7 @@ export class ServerTitan {
       limbBroken: false,
       stunned: false,
       remainingHp: hb.hp,
+      freedPlayerId: null,
     };
   }
 
@@ -779,6 +809,7 @@ export class ServerTitan {
       aiState: this.aiState,
       anim: this.anim,
       targetPlayerId: this.targetPlayerId,
+      grabbedPlayerId: this.grabbedPlayerId,
       hurtboxes: hbOut,
     };
   }
