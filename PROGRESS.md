@@ -94,6 +94,17 @@
 - [x] **Redesigned Desktop Menus & 4-Slot Co-op Waiting Lobby (`UIManager.ts`, `main.css`):**
   - Asymmetric left-aligned Main Menu preserving the live 3D city view, 2-column Multiplayer Room Browser, 4-Slot Co-op Waiting Lobby with one-click `Copy Code` feedback, Pause Menu, categorized Settings Modal, and Victory/Defeat Results Screen verified across `1920×1080` and `1366×768`.
 
+### Phase 10 — P1 Multiplayer Combat & Network Hardening (`COMPLETED`)
+- [x] **Server-Authoritative Thunder Spear Projectile Simulation (`CoopHunterRoom.ts`, `Protocol.ts`, `GameEngine.ts`):**
+  - Replaced instant server-side Thunder Spear detonation with real 60Hz fixed-tick projectile simulation (`ServerThunderSpearProjectile` + `stepProjectiles(dt, nowMs)`).
+  - Implemented continuous swept collision combining Rapier world raycasts (`castRay` against buildings, city walls, towers, and ground) with swept segment-sphere intersections against live and lag-compensated Titan hurtboxes so high-speed rockets (`95 m/s`) never tunnel through obstacles or hurtboxes even on large ticks.
+  - Synchronized projectile launch (`thunder_spear_fired`), active flight state (`NetRoomState.projectiles`), and authoritative impact detonation (`thunder_spear_exploded`) across all 2–4 clients.
+- [x] **Target Lock & Aim Cone Validation (`Protocol.ts`, `CoopHunterRoom.ts`):**
+  - Added `validateTargetLockAim` verifying `aimOrigin` proximity (`<= 10m` with LoS), `aimDir` consistency with authoritative camera facing (`player.lastCamForward`), rear-hemisphere rejection (`BEHIND_PLAYER`), and forward FOV cone bounds (`50°` half-cone `OUTSIDE_AIM_CONE`).
+- [x] **Reconnection Per-Attempt Timeout & Late-Socket Cleanup (`NetworkClient.ts`, `CoopHunterRoom.ts`):**
+  - Added `joinRoomWithTimeout` enforcing per-attempt and overall deadlines on `client.joinById(...)`, immediately closing any late-resolving room via `room.leave(true)` (`lateClosedRoomCount`) so hung or cancelled reconnects never leave orphan sockets or duplicate players.
+  - Guarded all room listeners in `bindRoom(room)` with `if (this.room !== room) return;`, added terminal error abort (`SESSION_EXPIRED`, `Room is full`), and verified with `30/30` passing automated tests (`npm test`).
+
 ---
 
 ## 2. Next Roadmap Phases (Phases 10 to 12)

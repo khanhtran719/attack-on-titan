@@ -19,6 +19,7 @@ import {
   NetHookState,
   NetPingMarker,
   NetPlayerState,
+  NetProjectileState,
   NetRoomState,
   PlayerLifeState,
   QUICK_CHAT_PRESETS,
@@ -28,6 +29,7 @@ import {
   SQUAD_COLORS,
   validateAndSanitizeInputFrame,
   validateAttackIntent,
+  validateTargetLockAim,
 } from '../shared/Protocol';
 import { ServerPlayerTarget, ServerTitan } from '../shared/ServerTitanSim';
 import {
@@ -108,9 +110,35 @@ interface ServerPlayerSession {
   rightHookRetryAfterMs: number;
   lastLeftHookDebug: HookFireDebugInfo | null;
   lastRightHookDebug: HookFireDebugInfo | null;
+  hasReceivedInputFrame: boolean;
+  lastInputReceivedAtMs: number;
+  lastCamOrigin: THREE.Vector3;
+  lastCamForward: THREE.Vector3;
   inputQueue: C2S_InputFrame[];
   packetsThisSecond: number;
   rateWindowStartMs: number;
+}
+
+export interface ServerThunderSpearProjectile {
+  id: string;
+  seq: number;
+  ownerId: string;
+  ownerName: string;
+  origin: THREE.Vector3;
+  position: THREE.Vector3;
+  prevPosition: THREE.Vector3;
+  direction: THREE.Vector3;
+  velocity: THREE.Vector3;
+  speed: number;
+  distanceTraveled: number;
+  maxRange: number;
+  elapsedSec: number;
+  maxLifetimeSec: number;
+  targetTitanId: string | null;
+  targetZone: TitanZoneType;
+  clientRttMs: number;
+  active: boolean;
+  exploded: boolean;
 }
 
 const SESSION_TOKEN_TTL_MS = 15 * 60 * 1000; // 15 minutes
@@ -149,13 +177,16 @@ export class CoopHunterRoom extends Room {
   public tickOverrunCount = 0;
   public rejectedInputCount = 0;
   public rejectedAttackCount = 0;
+  public rejectedTargetLockCount = 0;
   public hookRejectCount = 0;
+  public reconnectGracePeriodSec = 20;
 
   private physics!: PhysicsWorld;
   private cityLayout!: CityLayoutData;
   private players: Map<string, ServerPlayerSession> = new Map();
   private tokenToPlayerId: Map<string, string> = new Map();
   private titans: Map<string, ServerTitan> = new Map();
+  private projectiles: Map<string, ServerThunderSpearProjectile> = new Map();
   private pings: NetPingMarker[] = [];
 
   private serverTick = 0;
@@ -166,11 +197,16 @@ export class CoopHunterRoom extends Room {
   private teamScore = 0;
   private elapsedSeconds = 0;
   private nextTitanSeq = 1;
+  private nextProjectileSeq = 1;
   private simInterval: ReturnType<typeof setInterval> | null = null;
   private broadcastInterval: ReturnType<typeof setInterval> | null = null;
 
   public getPhysicsWorld(): PhysicsWorld {
     return this.physics;
+  }
+
+  public getActiveProjectiles(): ServerThunderSpearProjectile[] {
+    return Array.from(this.projectiles.values());
   }
 
   public getRoomMetrics() {
@@ -181,12 +217,14 @@ export class CoopHunterRoom extends Room {
       serverTick: this.serverTick,
       playerCount: this.players.size,
       titanCount: this.titans.size,
+      activeProjectileCount: this.projectiles.size,
       physicsActorCount: this.physics ? this.physics.getPlayerActorCount() : 0,
       lastTickDurationMs: Math.round(this.lastTickDurationMs * 100) / 100,
       maxTickDurationMs: Math.round(this.maxTickDurationMs * 100) / 100,
       tickOverrunCount: this.tickOverrunCount,
       rejectedInputCount: this.rejectedInputCount,
       rejectedAttackCount: this.rejectedAttackCount,
+      rejectedTargetLockCount: this.rejectedTargetLockCount,
       hookRejectCount: this.hookRejectCount,
     };
   }
@@ -258,6 +296,11 @@ export class CoopHunterRoom extends Room {
     const token =
       typeof options?.sessionToken === 'string' ? options.sessionToken : '';
     const isReconnecting = this.isValidActiveSessionToken(token);
+    if (options?.reconnectOnly && !isReconnecting) {
+      throw new Error(
+        'SESSION_EXPIRED: Reconnection session token is invalid or expired.'
+      );
+    }
     if (this.players.size >= 4 && !isReconnecting) {
       throw new Error('Room is full (maximum 4 players).');
     }
@@ -281,12 +324,30 @@ export class CoopHunterRoom extends Room {
         existing.client = client;
         existing.connected = true;
         existing.tokenIssuedAtMs = Date.now();
+        existing.lastReceivedSeq = 0;
+        existing.lastAttackSeq = 0;
+        existing.inputQueue = [];
         this.physics.ensurePlayerActor(client.sessionId, existing.position);
+        this.physics.setPlayerPosition(existing.position, client.sessionId);
         this.players.set(client.sessionId, existing);
         this.tokenToPlayerId.set(existing.sessionToken, client.sessionId);
         if (this.leaderId === oldId) {
           this.leaderId = client.sessionId;
           existing.isLeader = true;
+        }
+        // Update any active projectiles or Titan grabs referencing oldId
+        for (const proj of this.projectiles.values()) {
+          if (proj.ownerId === oldId) {
+            proj.ownerId = client.sessionId;
+          }
+        }
+        for (const titan of this.titans.values()) {
+          if (titan.grabbedPlayerId === oldId) {
+            titan.grabbedPlayerId = client.sessionId;
+          }
+          if (titan.targetPlayerId === oldId) {
+            titan.targetPlayerId = client.sessionId;
+          }
         }
         client.send('session_welcome', {
           playerId: client.sessionId,
@@ -383,6 +444,10 @@ export class CoopHunterRoom extends Room {
       rightHookRetryAfterMs: 0,
       lastLeftHookDebug: null,
       lastRightHookDebug: null,
+      hasReceivedInputFrame: false,
+      lastInputReceivedAtMs: 0,
+      lastCamOrigin: spawnPos.clone().add(new THREE.Vector3(0, 1.65, 0)),
+      lastCamForward: new THREE.Vector3(0, 0, -1),
       inputQueue: [],
       packetsThisSecond: 0,
       rateWindowStartMs: Date.now(),
@@ -417,19 +482,22 @@ export class CoopHunterRoom extends Room {
     this.broadcastSnapshot();
 
     if (!consented) {
-      // Allow 20-second reconnection grace period on unexpected disconnect
+      // Allow reconnection grace period on unexpected disconnect
       try {
-        await this.allowReconnection(client, 20);
+        await this.allowReconnection(client, this.reconnectGracePeriodSec);
         player.connected = true;
         this.broadcastSnapshot();
         return;
       } catch {
-        // Grace period expired; remove player cleanly
+        // Grace period expired; remove player cleanly if they did not reconnect via joinById
       }
     }
 
     // If the player reconnected under a new sessionId during the grace window, do not delete the new session
     const currentMappedId = this.tokenToPlayerId.get(player.sessionToken);
+    if (currentMappedId && currentMappedId !== client.sessionId) {
+      return;
+    }
     if (currentMappedId === client.sessionId) {
       this.tokenToPlayerId.delete(player.sessionToken);
     }
@@ -443,6 +511,7 @@ export class CoopHunterRoom extends Room {
   public onDispose(): void {
     if (this.simInterval) clearInterval(this.simInterval);
     if (this.broadcastInterval) clearInterval(this.broadcastInterval);
+    this.projectiles.clear();
     activeRoomsByCode.delete(this.roomCode);
     if (this.physics) {
       this.physics.dispose();
@@ -544,6 +613,17 @@ export class CoopHunterRoom extends Room {
         return;
       }
       player.lastReceivedSeq = frame.seq;
+      player.hasReceivedInputFrame = true;
+      player.lastInputReceivedAtMs = Date.now();
+      player.lastCamForward.set(...frame.camForward).normalize();
+      const candOrigin = new THREE.Vector3(...frame.camOrigin);
+      if (candOrigin.distanceTo(player.position) <= 12.0) {
+        player.lastCamOrigin.copy(candOrigin);
+      } else {
+        player.lastCamOrigin
+          .copy(player.position)
+          .add(new THREE.Vector3(0, 1.65, 0));
+      }
 
       // Bound input queue to prevent flood/memory growth
       if (player.inputQueue.length >= 16) {
@@ -616,6 +696,7 @@ export class CoopHunterRoom extends Room {
     this.teamScore = 0;
     this.elapsedSeconds = 0;
     this.titans.clear();
+    this.projectiles.clear();
     this.pings = [];
 
     let idx = 0;
@@ -654,6 +735,10 @@ export class CoopHunterRoom extends Room {
       p.assists = 0;
       p.score = 0;
       p.damageDealt = 0;
+      p.hasReceivedInputFrame = false;
+      p.lastInputReceivedAtMs = 0;
+      p.lastCamOrigin.copy(sp).add(new THREE.Vector3(0, 1.65, 0));
+      p.lastCamForward.set(0, 0, -1);
       p.inputQueue = [];
       this.physics.ensurePlayerActor(p.id, sp);
       this.physics.setPlayerPosition(sp, p.id);
@@ -810,7 +895,14 @@ export class CoopHunterRoom extends Room {
     // Keep Rapier world & QueryPipeline synchronized each authoritative tick
     this.physics.step();
 
-    // 2. Step Co-op Downed & Revive System
+    // 2. Step Authoritative Thunder Spear Projectiles with Swept Collision
+    const projectileDt =
+      typeof dt === 'number' && Number.isFinite(dt) && dt > 0
+        ? clamp(dt, 1 / 240, 0.25)
+        : authoritativeDt;
+    this.stepProjectiles(projectileDt, nowMs);
+
+    // 3. Step Co-op Downed & Revive System
     this.stepDownedAndRevive(authoritativeDt, nowMs);
 
     // 3. Step Shared Server-Side Titan AI & Attack Collisions
@@ -1661,84 +1753,140 @@ export class CoopHunterRoom extends Room {
       return;
     }
 
-    player.thunderSpears--;
-    player.nextThunderSpearAllowedMs =
-      nowMs + GAME_CONFIG.combat.thunderSpearCooldown * 1000;
-    player.anim = 'HeavyAttack';
-
-    // If the player was grabbed by a Titan, firing a Thunder Spear immediately blasts them free!
+    // If the player is actively held in a Titan's hand, firing a Thunder Spear is a point-blank counter-blast
     if (player.grabbedByTitanId) {
       const grabbingTitan = this.titans.get(player.grabbedByTitanId);
       if (grabbingTitan && !grabbingTitan.isDead()) {
+        player.thunderSpears--;
+        player.nextThunderSpearAllowedMs =
+          nowMs + GAME_CONFIG.combat.thunderSpearCooldown * 1000;
+        player.anim = 'HeavyAttack';
+
+        const baseDmg = GAME_CONFIG.combat.thunderSpearBaseDamage;
+        const handPos = grabbingTitan.hurtboxes.RightArm.worldPosition.clone();
         const res = grabbingTitan.applyDamageFromPlayer(
           player.id,
           'RightArm',
-          GAME_CONFIG.combat.thunderSpearBaseDamage
+          baseDmg
         );
-        player.damageDealt += GAME_CONFIG.combat.thunderSpearBaseDamage;
+        player.damageDealt += baseDmg;
         this.releaseVictimOnTitanBreak(
           player,
           grabbingTitan,
           res.freedPlayerId || player.id,
           nowMs
         );
+        this.broadcastCombatEvent({
+          type: 'thunder_spear_exploded',
+          attackerId: player.id,
+          attackerName: player.nickname,
+          targetTitanId: grabbingTitan.id,
+          zone: 'RightArm',
+          damage: baseDmg,
+          worldPos: handPos.toArray() as [number, number, number],
+          message: `${player.nickname} detonated a point-blank THUNDER SPEAR! (${baseDmg} BLAST DMG)`,
+        });
         return;
       }
     }
 
     const maxRange = GAME_CONFIG.combat.thunderSpearRange;
-    const blastRadius = GAME_CONFIG.combat.thunderSpearBlastRadius;
-    const baseDmg = GAME_CONFIG.combat.thunderSpearBaseDamage;
-    const splashDmg = GAME_CONFIG.combat.thunderSpearSplashDamage;
-
+    const speed = GAME_CONFIG.combat.thunderSpearSpeed;
     const playerChest = player.position
       .clone()
-      .add(new THREE.Vector3(0, 1.5, 0));
+      .add(new THREE.Vector3(0, 1.4, 0));
 
+    // 1. Validate aimOrigin proximity & Line-of-Sight from playerChest
     let aimOrigin = playerChest.clone();
     if (isValidFiniteVec3(intent.aimOrigin)) {
       const candidateOrigin = new THREE.Vector3(...intent.aimOrigin);
+      const originDist = candidateOrigin.distanceTo(player.position);
       if (
-        candidateOrigin.distanceTo(player.position) <= 10.0 &&
+        originDist <= 10.0 &&
         this.physics.hasLineOfSight(playerChest, candidateOrigin, 0.5)
       ) {
         aimOrigin = candidateOrigin;
+      } else {
+        this.rejectedTargetLockCount++;
+        if (originDist > 12.0) {
+          this.rejectedAttackCount++;
+        }
       }
     }
 
-    const aimDir = isValidFiniteVec3(intent.aimDir)
+    // 2. Validate aimDir against authoritative camera/player facing
+    const fallbackYawDir = new THREE.Vector3(
+      -Math.sin(intent.aimYaw || player.yaw),
+      0,
+      -Math.cos(intent.aimYaw || player.yaw)
+    ).normalize();
+    let aimDir = isValidFiniteVec3(intent.aimDir)
       ? new THREE.Vector3(...intent.aimDir).normalize()
-      : new THREE.Vector3(
-          -Math.sin(intent.aimYaw || player.yaw),
-          0,
-          -Math.cos(intent.aimYaw || player.yaw)
-        ).normalize();
+      : fallbackYawDir.clone();
 
-    let directTitan: ServerTitan | null = null;
-    let directZone: TitanZoneType = intent.targetZone || 'Nape';
-    let explosionPos: THREE.Vector3 | null = null;
+    const hasRecentCam =
+      player.hasReceivedInputFrame &&
+      nowMs - player.lastInputReceivedAtMs < 1500;
+    if (hasRecentCam && aimDir.dot(player.lastCamForward) < 0.15) {
+      this.rejectedTargetLockCount++;
+      this.rejectedAttackCount++;
+      aimDir = player.lastCamForward.clone();
+    }
+
+    // 3. Validate Target Lock (FOV / Aim Cone / Behind-Player rejection)
+    let lockedTitanId: string | null = null;
+    let lockedZone: TitanZoneType = intent.targetZone || 'Nape';
+    let launchDir = aimDir.clone();
+    let targetLockRejected = false;
 
     if (intent.targetTitanId) {
       const cand = this.titans.get(intent.targetTitanId);
-      const hb = cand?.hurtboxes[directZone];
-      if (
-        cand &&
-        !cand.isDead() &&
-        hb &&
-        hb.worldPosition.distanceTo(player.position) <= maxRange &&
-        this.physics.hasLineOfSight(
-          playerChest,
-          hb.worldPosition,
-          hb.radius + 1.2
-        )
-      ) {
-        directTitan = cand;
-        explosionPos = hb.worldPosition.clone();
+      const hb = cand?.hurtboxes[lockedZone];
+      if (!cand || cand.isDead() || !hb) {
+        targetLockRejected = true;
+        this.rejectedTargetLockCount++;
+      } else {
+        const aimCheck = validateTargetLockAim({
+          playerPos: [player.position.x, player.position.y, player.position.z],
+          aimOrigin: [aimOrigin.x, aimOrigin.y, aimOrigin.z],
+          aimDir: [aimDir.x, aimDir.y, aimDir.z],
+          lastCamForward: hasRecentCam
+            ? [
+                player.lastCamForward.x,
+                player.lastCamForward.y,
+                player.lastCamForward.z,
+              ]
+            : null,
+          targetPos: [
+            hb.worldPosition.x,
+            hb.worldPosition.y,
+            hb.worldPosition.z,
+          ],
+          targetRadius: hb.radius,
+          maxRange,
+          maxHalfConeDeg: 50,
+        });
+
+        if (!aimCheck.valid) {
+          targetLockRejected = true;
+          this.rejectedTargetLockCount++;
+          this.rejectedAttackCount++;
+        } else {
+          lockedTitanId = cand.id;
+          // Target Lock only assists initial launch direction toward the hurtbox;
+          // the projectile still flies through the world and is blocked by walls/buildings!
+          const toHb = hb.worldPosition.clone().sub(playerChest);
+          if (toHb.lengthSq() > 0.001) {
+            launchDir = toHb.normalize();
+          }
+        }
       }
     }
 
-    if (!explosionPos) {
+    // 4. If no explicit target lock was requested, allow subtle reticle convergence within valid aim cone
+    if (!lockedTitanId && !targetLockRejected) {
       let bestScore = Infinity;
+      let bestHbPos: THREE.Vector3 | null = null;
       for (const titan of this.titans.values()) {
         if (titan.isDead()) continue;
         for (const zone of Object.keys(titan.hurtboxes) as TitanZoneType[]) {
@@ -1750,33 +1898,334 @@ export class CoopHunterRoom extends Room {
           if (proj <= 0) continue;
           const closest = aimOrigin.clone().addScaledVector(aimDir, proj);
           const radialErr = closest.distanceTo(hb.worldPosition);
-          if (
-            radialErr <= hb.radius * 3.5 &&
-            this.physics.hasLineOfSight(
-              playerChest,
-              hb.worldPosition,
-              hb.radius + 1.2
-            )
-          ) {
+          if (radialErr <= hb.radius * 2.5) {
+            const aimCheck = validateTargetLockAim({
+              playerPos: [
+                player.position.x,
+                player.position.y,
+                player.position.z,
+              ],
+              aimOrigin: [aimOrigin.x, aimOrigin.y, aimOrigin.z],
+              aimDir: [aimDir.x, aimDir.y, aimDir.z],
+              lastCamForward: hasRecentCam
+                ? [
+                    player.lastCamForward.x,
+                    player.lastCamForward.y,
+                    player.lastCamForward.z,
+                  ]
+                : null,
+              targetPos: [
+                hb.worldPosition.x,
+                hb.worldPosition.y,
+                hb.worldPosition.z,
+              ],
+              targetRadius: hb.radius,
+              maxRange,
+              maxHalfConeDeg: 45,
+            });
+            if (!aimCheck.valid) continue;
             const score =
               radialErr * 3.0 + dist * 0.15 - (zone === 'Nape' ? 2.5 : 0);
             if (score < bestScore) {
               bestScore = score;
-              directTitan = titan;
-              directZone = zone;
-              explosionPos = hb.worldPosition.clone();
+              lockedTitanId = titan.id;
+              lockedZone = zone;
+              bestHbPos = hb.worldPosition.clone();
             }
           }
         }
       }
+
+      if (bestHbPos) {
+        const toHb = bestHbPos.sub(playerChest);
+        if (toHb.lengthSq() > 0.001) {
+          launchDir = toHb.normalize();
+        }
+      } else if (aimOrigin.distanceTo(playerChest) > 0.25) {
+        const camHit = this.physics.castRay(aimOrigin, aimDir, maxRange, false);
+        const convergePt = camHit
+          ? camHit.point.clone()
+          : aimOrigin.clone().addScaledVector(aimDir, maxRange);
+        const candidateDir = convergePt.sub(playerChest).normalize();
+        if (candidateDir.dot(aimDir) >= 0.85) {
+          launchDir = candidateDir;
+        }
+      }
     }
 
-    if (!explosionPos) {
-      const rayHit = this.physics.castRay(aimOrigin, aimDir, maxRange, false);
-      explosionPos = rayHit
-        ? rayHit.point.clone()
-        : aimOrigin.clone().addScaledVector(aimDir, 40);
+    // 5. Consume ammo & spawn authoritative Thunder Spear projectile in fixed-tick simulation
+    player.thunderSpears--;
+    player.nextThunderSpearAllowedMs =
+      nowMs + GAME_CONFIG.combat.thunderSpearCooldown * 1000;
+    player.anim = 'HeavyAttack';
+
+    const projId = `ts_${this.serverTick}_${this.nextProjectileSeq++}`;
+    const projectile: ServerThunderSpearProjectile = {
+      id: projId,
+      seq: intent.seq,
+      ownerId: player.id,
+      ownerName: player.nickname,
+      origin: playerChest.clone(),
+      position: playerChest.clone(),
+      prevPosition: playerChest.clone(),
+      direction: launchDir.clone(),
+      velocity: launchDir.clone().multiplyScalar(speed),
+      speed,
+      distanceTraveled: 0,
+      maxRange,
+      elapsedSec: 0,
+      maxLifetimeSec: maxRange / speed + 0.5,
+      targetTitanId: lockedTitanId,
+      targetZone: lockedZone,
+      clientRttMs: clamp(Number(intent.clientRttMs) || 0, 0, 400),
+      active: true,
+      exploded: false,
+    };
+
+    this.projectiles.set(projId, projectile);
+
+    const estimatedEnd = playerChest
+      .clone()
+      .addScaledVector(launchDir, maxRange);
+    this.broadcastCombatEvent({
+      type: 'thunder_spear_fired',
+      projectileId: projId,
+      attackerId: player.id,
+      attackerName: player.nickname,
+      targetTitanId: lockedTitanId ?? undefined,
+      zone: lockedZone,
+      origin: playerChest.toArray() as [number, number, number],
+      direction: launchDir.toArray() as [number, number, number],
+      targetPos: estimatedEnd.toArray() as [number, number, number],
+      worldPos: playerChest.toArray() as [number, number, number],
+      message: `${player.nickname} launched a THUNDER SPEAR!`,
+    });
+  }
+
+  /**
+   * Advances all active Thunder Spear projectiles on the server using continuous swept
+   * segment raycasts and segment-sphere hurtbox intersections so high-speed projectiles
+   * never tunnel through buildings, walls, or Titan hurtboxes even on large ticks.
+   */
+  private stepProjectiles(dt: number, nowMs: number): void {
+    if (this.projectiles.size === 0) return;
+
+    const allZones: TitanZoneType[] = [
+      'Nape',
+      'Head',
+      'LeftArm',
+      'RightArm',
+      'LeftLeg',
+      'RightLeg',
+    ];
+
+    for (const [projId, proj] of Array.from(this.projectiles.entries())) {
+      if (!proj.active || proj.exploded) {
+        this.projectiles.delete(projId);
+        continue;
+      }
+
+      // If locked onto a live Titan within forward cone, track its moving hurtbox
+      // (while still subject to full swept world/wall raycast blocking below)
+      if (proj.targetTitanId) {
+        const lockedTitan = this.titans.get(proj.targetTitanId);
+        if (lockedTitan && !lockedTitan.isDead()) {
+          const targetHb = lockedTitan.hurtboxes[proj.targetZone];
+          if (targetHb) {
+            const toTarget = targetHb.worldPosition.clone().sub(proj.position);
+            if (toTarget.lengthSq() > 0.001) {
+              const desiredDir = toTarget.normalize();
+              if (desiredDir.dot(proj.direction) >= 0.35) {
+                proj.direction
+                  .lerp(desiredDir, Math.min(1.0, dt * 18.0))
+                  .normalize();
+                proj.velocity.copy(proj.direction).multiplyScalar(proj.speed);
+              }
+            }
+          }
+        }
+      }
+
+      const remRange = Math.max(0, proj.maxRange - proj.distanceTraveled);
+      const stepDist = Math.min(proj.speed * dt, remRange);
+      const segStart = proj.position.clone();
+      const dir = proj.direction;
+      proj.prevPosition.copy(segStart);
+
+      if (stepDist <= 1e-5) {
+        this.detonateServerThunderSpear(
+          proj,
+          segStart,
+          null,
+          proj.targetZone,
+          nowMs
+        );
+        this.projectiles.delete(projId);
+        continue;
+      }
+
+      // 1. Swept static world raycast (buildings, city walls, towers) + ground plane check
+      const wallHit = this.physics.castRay(segStart, dir, stepDist, false);
+      let wallDist = wallHit ? wallHit.distance : Infinity;
+      let wallPoint = wallHit ? wallHit.point.clone() : null;
+
+      if (dir.y < -1e-4 && segStart.y > 0.15) {
+        const gDist = (segStart.y - 0.15) / -dir.y;
+        if (gDist >= 0 && gDist <= stepDist && gDist < wallDist) {
+          wallDist = gDist;
+          wallPoint = segStart.clone().addScaledVector(dir, gDist);
+        }
+      }
+
+      // 2. Swept segment-sphere intersection against all live Titan hurtboxes before wallDist
+      const maxTitanCheckDist = Math.min(stepDist, wallDist);
+      let bestTitanHit: {
+        titan: ServerTitan;
+        zone: TitanZoneType;
+        dist: number;
+        impactPos: THREE.Vector3;
+      } | null = null;
+
+      const rewindMs = clamp((proj.clientRttMs || 0) * 0.5, 0, 180);
+
+      for (const titan of this.titans.values()) {
+        if (titan.isDead()) continue;
+        const hist = titan.getHistoricalState(nowMs, rewindMs);
+
+        // If this projectile's trajectory passes directly through its targeted hurtbox on this Titan,
+        // test that target zone first so outer limbs/head don't prematurely intercept a Nape shot.
+        const prefZone: TitanZoneType = proj.targetZone || 'Nape';
+        const prefHb = titan.hurtboxes[prefZone];
+        let rayHitsPreferredZone = false;
+        if (prefHb) {
+          const toPref = prefHb.worldPosition.clone().sub(segStart);
+          const tPref = toPref.dot(dir);
+          if (tPref >= -1.0 && tPref <= remRange + 2.0) {
+            const perpSq = segStart
+              .clone()
+              .addScaledVector(dir, Math.max(0, tPref))
+              .distanceToSquared(prefHb.worldPosition);
+            const prefR = prefHb.radius + 0.75;
+            if (perpSq <= prefR * prefR) {
+              rayHitsPreferredZone = true;
+            }
+          }
+        }
+
+        const candidateZones: TitanZoneType[] = rayHitsPreferredZone
+          ? [prefZone]
+          : [prefZone, ...allZones.filter((z) => z !== prefZone)];
+
+        for (const zone of candidateZones) {
+          const hb = titan.hurtboxes[zone];
+          const hitRadius = hb.radius + 0.65;
+          const centers = [hb.worldPosition, hist.hurtboxPositions[zone]];
+
+          for (const center of centers) {
+            if (!center) continue;
+            const toC = center.clone().sub(segStart);
+            const projAlong = toC.dot(dir);
+            if (
+              projAlong < -hitRadius ||
+              projAlong > maxTitanCheckDist + hitRadius
+            ) {
+              continue;
+            }
+            const clampedAlong = clamp(projAlong, 0, maxTitanCheckDist);
+            const closestPt = segStart
+              .clone()
+              .addScaledVector(dir, clampedAlong);
+            const distSq = closestPt.distanceToSquared(center);
+            if (distSq <= hitRadius * hitRadius) {
+              const halfChord = Math.sqrt(
+                Math.max(0, hitRadius * hitRadius - distSq)
+              );
+              const entryDist = clamp(
+                projAlong - halfChord,
+                0,
+                maxTitanCheckDist
+              );
+              if (
+                entryDist <= wallDist &&
+                (!bestTitanHit || entryDist < bestTitanHit.dist)
+              ) {
+                bestTitanHit = {
+                  titan,
+                  zone,
+                  dist: entryDist,
+                  impactPos: hb.worldPosition.clone(),
+                };
+              }
+            }
+          }
+        }
+      }
+
+      // 3. Resolve collision or advance projectile
+      if (bestTitanHit) {
+        proj.position.copy(bestTitanHit.impactPos);
+        proj.distanceTraveled += bestTitanHit.dist;
+        proj.elapsedSec +=
+          dt * (stepDist > 0 ? bestTitanHit.dist / stepDist : 1);
+        this.detonateServerThunderSpear(
+          proj,
+          bestTitanHit.impactPos,
+          bestTitanHit.titan,
+          bestTitanHit.zone,
+          nowMs
+        );
+        this.projectiles.delete(projId);
+      } else if (wallPoint !== null && wallDist <= stepDist) {
+        // Back off slightly along -dir so explosion sits on the front face of the wall
+        const impactPos = wallPoint.clone().addScaledVector(dir, -0.08);
+        proj.position.copy(impactPos);
+        proj.distanceTraveled += wallDist;
+        proj.elapsedSec += dt * (stepDist > 0 ? wallDist / stepDist : 1);
+        this.detonateServerThunderSpear(
+          proj,
+          impactPos,
+          null,
+          proj.targetZone,
+          nowMs
+        );
+        this.projectiles.delete(projId);
+      } else {
+        proj.position.addScaledVector(dir, stepDist);
+        proj.distanceTraveled += stepDist;
+        proj.elapsedSec += dt;
+
+        if (
+          proj.distanceTraveled >= proj.maxRange - 1e-4 ||
+          proj.elapsedSec >= proj.maxLifetimeSec
+        ) {
+          this.detonateServerThunderSpear(
+            proj,
+            proj.position.clone(),
+            null,
+            proj.targetZone,
+            nowMs
+          );
+          this.projectiles.delete(projId);
+        }
+      }
     }
+  }
+
+  private detonateServerThunderSpear(
+    proj: ServerThunderSpearProjectile,
+    explosionPos: THREE.Vector3,
+    directTitan: ServerTitan | null,
+    directZone: TitanZoneType,
+    nowMs: number
+  ): void {
+    if (proj.exploded) return;
+    proj.exploded = true;
+    proj.active = false;
+
+    const owner = this.players.get(proj.ownerId);
+    const blastRadius = GAME_CONFIG.combat.thunderSpearBlastRadius;
+    const baseDmg = GAME_CONFIG.combat.thunderSpearBaseDamage;
+    const splashDmg = GAME_CONFIG.combat.thunderSpearSplashDamage;
 
     const allZones: TitanZoneType[] = [
       'Nape',
@@ -1787,10 +2236,11 @@ export class CoopHunterRoom extends Room {
       'RightLeg',
     ];
     const damagedZones = new Set<string>();
+    let totalDamageDealt = 0;
 
     for (const titan of this.titans.values()) {
       if (titan.isDead()) continue;
-      const isDirect = directTitan && titan.id === directTitan.id;
+      const isDirect = Boolean(directTitan && titan.id === directTitan.id);
       const orderedZones: TitanZoneType[] = isDirect
         ? [directZone, ...allZones.filter((z) => z !== directZone)]
         : allZones;
@@ -1811,7 +2261,7 @@ export class CoopHunterRoom extends Room {
         }
 
         if (isPrimary || dist <= blastRadius + hb.radius) {
-          // Verify Line-of-Sight from explosion Pos to hurtbox so splash damage cannot penetrate solid buildings/walls
+          // Verify Line-of-Sight from explosionPos to hurtbox so splash damage never penetrates walls/buildings
           if (
             !isPrimary &&
             !this.physics.hasLineOfSight(
@@ -1825,13 +2275,16 @@ export class CoopHunterRoom extends Room {
 
           damagedZones.add(zoneKey);
           const dmg = isPrimary ? baseDmg : splashDmg;
-          const res = titan.applyDamageFromPlayer(player.id, zone, dmg);
-          player.damageDealt += dmg;
+          const res = titan.applyDamageFromPlayer(proj.ownerId, zone, dmg);
+          totalDamageDealt += dmg;
+          if (owner) {
+            owner.damageDealt += dmg;
+          }
           hitTitan = true;
 
-          if (res.freedPlayerId) {
+          if (res.freedPlayerId && owner) {
             this.releaseVictimOnTitanBreak(
-              player,
+              owner,
               titan,
               res.freedPlayerId,
               nowMs
@@ -1839,19 +2292,21 @@ export class CoopHunterRoom extends Room {
           }
 
           if (res.killed) {
-            this.onServerTitanKilled(titan, player, dmg, 2.2);
+            if (owner) {
+              this.onServerTitanKilled(titan, owner, dmg, 2.2);
+            }
             break;
-          } else if (res.limbBroken) {
-            player.score += 350;
+          } else if (res.limbBroken && owner) {
+            owner.score += 350;
             this.teamScore += 350;
           }
         }
       }
 
       if (hitTitan && !titan.isDead()) {
-        if (titan.grabbedPlayerId) {
+        if (titan.grabbedPlayerId && owner) {
           this.releaseVictimOnTitanBreak(
-            player,
+            owner,
             titan,
             titan.grabbedPlayerId,
             nowMs
@@ -1868,13 +2323,14 @@ export class CoopHunterRoom extends Room {
 
     this.broadcastCombatEvent({
       type: 'thunder_spear_exploded',
-      attackerId: player.id,
-      attackerName: player.nickname,
+      projectileId: proj.id,
+      attackerId: proj.ownerId,
+      attackerName: proj.ownerName,
       targetTitanId: directTitan?.id,
       zone: directZone,
-      damage: baseDmg,
+      damage: totalDamageDealt > 0 ? totalDamageDealt : baseDmg,
       worldPos: explosionPos.toArray() as [number, number, number],
-      message: `${player.nickname} detonated a THUNDER SPEAR! (${baseDmg} BLAST DMG)`,
+      message: `${proj.ownerName} detonated a THUNDER SPEAR! (${baseDmg} BLAST DMG)`,
     });
   }
 
@@ -1893,6 +2349,86 @@ export class CoopHunterRoom extends Room {
     if (player.grabbedByTitanId !== null) return;
     if (nowMs < player.nextAttackAllowedMs) return;
 
+    const playerChest = player.position
+      .clone()
+      .add(new THREE.Vector3(0, 1.4, 0));
+    let aimOrigin = playerChest.clone();
+    if (isValidFiniteVec3(intent.aimOrigin)) {
+      const candidateOrigin = new THREE.Vector3(...intent.aimOrigin);
+      if (
+        candidateOrigin.distanceTo(player.position) <= 10.0 &&
+        this.physics.hasLineOfSight(playerChest, candidateOrigin, 0.5)
+      ) {
+        aimOrigin = candidateOrigin;
+      } else {
+        this.rejectedTargetLockCount++;
+      }
+    }
+
+    const fallbackYawDir = new THREE.Vector3(
+      -Math.sin(intent.aimYaw || player.yaw),
+      0,
+      -Math.cos(intent.aimYaw || player.yaw)
+    ).normalize();
+    let aimDir = isValidFiniteVec3(intent.aimDir)
+      ? new THREE.Vector3(...intent.aimDir).normalize()
+      : fallbackYawDir.clone();
+
+    const hasRecentCam =
+      player.hasReceivedInputFrame &&
+      nowMs - player.lastInputReceivedAtMs < 1500;
+    if (hasRecentCam && aimDir.dot(player.lastCamForward) < 0.15) {
+      this.rejectedTargetLockCount++;
+      this.rejectedAttackCount++;
+      aimDir = player.lastCamForward.clone();
+    }
+
+    const targetTitan =
+      intent.targetTitanId && this.titans.get(intent.targetTitanId);
+    const targetZone: TitanZoneType = intent.targetZone || 'Nape';
+    let targetLockValid = false;
+
+    if (intent.targetTitanId) {
+      if (!targetTitan || targetTitan.isDead()) {
+        this.rejectedTargetLockCount++;
+      } else {
+        const hb = targetTitan.hurtboxes[targetZone];
+        const aimCheck = hb
+          ? validateTargetLockAim({
+              playerPos: [
+                player.position.x,
+                player.position.y,
+                player.position.z,
+              ],
+              aimOrigin: [aimOrigin.x, aimOrigin.y, aimOrigin.z],
+              aimDir: [aimDir.x, aimDir.y, aimDir.z],
+              lastCamForward: hasRecentCam
+                ? [
+                    player.lastCamForward.x,
+                    player.lastCamForward.y,
+                    player.lastCamForward.z,
+                  ]
+                : null,
+              targetPos: [
+                hb.worldPosition.x,
+                hb.worldPosition.y,
+                hb.worldPosition.z,
+              ],
+              targetRadius: hb.radius,
+              maxRange: 14.0,
+              maxHalfConeDeg: 60,
+            })
+          : null;
+
+        if (!aimCheck || !aimCheck.valid) {
+          this.rejectedTargetLockCount++;
+          this.rejectedAttackCount++;
+        } else {
+          targetLockValid = true;
+        }
+      }
+    }
+
     const isHeavy = Boolean(intent.isHeavy);
     const durationMs =
       (isHeavy
@@ -1910,11 +2446,8 @@ export class CoopHunterRoom extends Room {
       player.position.z
     );
 
-    // Apply close-range aerial strike assist lunge on server (only if unobstructed by walls)
-    const targetTitan =
-      intent.targetTitanId && this.titans.get(intent.targetTitanId);
-    const targetZone: TitanZoneType = intent.targetZone || 'Nape';
-    if (targetTitan && !targetTitan.isDead()) {
+    // Apply close-range aerial strike assist lunge on server ONLY when targetLockValid and unobstructed
+    if (targetLockValid && targetTitan && !targetTitan.isDead()) {
       const hb = targetTitan.hurtboxes[targetZone];
       const zp = hb?.worldPosition;
       if (
@@ -1938,6 +2471,10 @@ export class CoopHunterRoom extends Room {
 
     for (const titan of this.titans.values()) {
       if (titan.isDead()) continue;
+      // If client explicitly targeted a Titan that failed aim-cone validation, do not allow hitting it
+      if (intent.targetTitanId === titan.id && !targetLockValid) {
+        continue;
+      }
 
       const hist = titan.getHistoricalState(nowMs, rewindMs);
       const priorityZones: TitanZoneType[] = [
@@ -1965,6 +2502,12 @@ export class CoopHunterRoom extends Room {
         const minDist = Math.min(distNow, distHist);
 
         if (minDist <= hb.radius + effectiveReach) {
+          // Reject melee hits on hurtboxes behind the player's aim cone
+          const toHb = currentPos.clone().sub(playerSlashCenter);
+          if (toHb.lengthSq() > 0.25 && toHb.normalize().dot(aimDir) < -0.1) {
+            continue;
+          }
+
           // Verify Line-of-Sight so players cannot slash Titans through solid buildings or city walls
           const hasLoS =
             this.physics.hasLineOfSight(
@@ -1982,14 +2525,17 @@ export class CoopHunterRoom extends Room {
           hitZonesInSwing.add(zoneKey);
 
           const relSpeed = player.velocity.clone().sub(titan.velocity).length();
+          const useHist = distHist < distNow;
+          const refYaw = useHist ? hist.yaw : titan.yaw;
+          const refPos = useHist ? hist.position : titan.position;
           const titanForward = new THREE.Vector3(
-            Math.sin(hist.yaw),
+            Math.sin(refYaw),
             0,
-            Math.cos(hist.yaw)
+            Math.cos(refYaw)
           ).normalize();
           const napeCos = evaluateNapeApproachCos(
             player.position,
-            hist.position,
+            refPos,
             titanForward
           );
 
@@ -2438,6 +2984,27 @@ export class CoopHunterRoom extends Room {
       titansObj[tid] = t.toNetState();
     }
 
+    const projectilesArr: NetProjectileState[] = [];
+    for (const proj of this.projectiles.values()) {
+      if (!proj.active || proj.exploded) continue;
+      projectilesArr.push({
+        id: proj.id,
+        ownerId: proj.ownerId,
+        position: [
+          Math.round(proj.position.x * 100) / 100,
+          Math.round(proj.position.y * 100) / 100,
+          Math.round(proj.position.z * 100) / 100,
+        ],
+        velocity: [
+          Math.round(proj.velocity.x * 100) / 100,
+          Math.round(proj.velocity.y * 100) / 100,
+          Math.round(proj.velocity.z * 100) / 100,
+        ],
+        targetTitanId: proj.targetTitanId,
+        targetZone: proj.targetZone,
+      });
+    }
+
     const rank =
       this.teamScore >= 9000
         ? 'S'
@@ -2467,6 +3034,7 @@ export class CoopHunterRoom extends Room {
       players: playersObj,
       titans: titansObj,
       pings: this.pings,
+      projectiles: projectilesArr,
     };
   }
 

@@ -47,10 +47,14 @@ export class NetworkClient {
   public maxReconnectAttempts = 4;
   public reconnectBaseDelayMs = 250;
   public reconnectTimeoutMs = 8000;
+  public reconnectAttemptTimeoutMs = 2500;
+  public lateClosedRoomCount = 0;
+  public lastDisconnectReason = '';
   private lastRoomId = '';
   private lastNickname = 'Scout';
   private isAutoReconnecting = false;
   private reconnectCancelToken = 0;
+  private activeReconnectPromise: Promise<boolean> | null = null;
 
   // Simulated network conditions for testing lag 50/100/200ms, jitter & packet loss
   public netConditions: NetworkConditions = {
@@ -271,6 +275,70 @@ export class NetworkClient {
     }
   }
 
+  /**
+   * Wraps client.joinById with a strict per-attempt deadline timer.
+   * If the attempt times out or is cancelled before resolving, any late-resolving Room
+   * is immediately closed via leave(true) so no orphan sockets or duplicate players remain.
+   */
+  private joinRoomWithTimeout(
+    roomId: string,
+    options: Record<string, unknown>,
+    timeoutMs: number,
+    expectedCancelToken: number
+  ): Promise<Room> {
+    return new Promise<Room>((resolve, reject) => {
+      let settled = false;
+      const effectiveTimeout = Math.max(1, Math.round(timeoutMs));
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error('RECONNECT_ATTEMPT_TIMEOUT'));
+      }, effectiveTimeout);
+
+      this.client
+        .joinById(roomId, options)
+        .then((room) => {
+          clearTimeout(timer);
+          if (
+            settled ||
+            this.reconnectCancelToken !== expectedCancelToken
+          ) {
+            this.lateClosedRoomCount++;
+            try {
+              void room.leave(true);
+            } catch {
+              // Ignore socket close error on late room
+            }
+            if (!settled) {
+              settled = true;
+              reject(new Error('RECONNECT_CANCELLED'));
+            }
+            return;
+          }
+          settled = true;
+          resolve(room);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          if (settled) return;
+          settled = true;
+          reject(err);
+        });
+    });
+  }
+
+  private isTerminalReconnectError(err: unknown): boolean {
+    const msg =
+      err instanceof Error
+        ? err.message
+        : typeof err === 'string'
+          ? err
+          : '';
+    return /Room is full|SESSION_EXPIRED|INVALID_SESSION|room.*not found|not available/i.test(
+      msg
+    );
+  }
+
   public async reconnectToRoom(
     roomId: string,
     nickname: string
@@ -279,24 +347,38 @@ export class NetworkClient {
       this.setConnectionState('disconnected', 'Missing session token');
       return false;
     }
-    this.setConnectionState('reconnecting');
+    const token = ++this.reconnectCancelToken;
+    this.setConnectionState('reconnecting', 'Reconnecting to room...');
     try {
-      const room = await this.client.joinById(roomId, {
-        nickname,
-        sessionToken: this.sessionToken,
-      });
+      const attemptTimeout = Math.min(
+        this.reconnectAttemptTimeoutMs,
+        this.reconnectTimeoutMs
+      );
+      const room = await this.joinRoomWithTimeout(
+        roomId,
+        {
+          nickname,
+          sessionToken: this.sessionToken,
+          reconnectOnly: true,
+        },
+        attemptTimeout,
+        token
+      );
       this.lastRoomId = room.roomId;
       await this.bindRoom(room);
       return true;
-    } catch {
-      this.setConnectionState('disconnected', 'Reconnection expired');
+    } catch (err: any) {
+      this.setConnectionState(
+        'disconnected',
+        err?.message || 'Reconnection expired'
+      );
       return false;
     }
   }
 
   /**
-   * Bounded exponential-backoff reconnection loop with wall-clock timeout.
-   * Ensures the client never stays stuck in 'reconnecting' state indefinitely.
+   * Bounded exponential-backoff reconnection loop with per-attempt and overall wall-clock timeouts.
+   * Ensures the client never stays stuck in 'reconnecting' state indefinitely, even if joinById hangs.
    */
   public async reconnectWithBackoff(
     roomId = this.lastRoomId,
@@ -306,54 +388,117 @@ export class NetworkClient {
       this.setConnectionState('disconnected', 'No active session to reconnect');
       return false;
     }
-    if (this.isAutoReconnecting) return false;
+    if (this.isAutoReconnecting && this.activeReconnectPromise) {
+      return this.activeReconnectPromise;
+    }
+
     this.isAutoReconnecting = true;
     const token = ++this.reconnectCancelToken;
+    const promise = this.executeReconnectLoop(roomId, nickname, token);
+    this.activeReconnectPromise = promise;
+
+    try {
+      return await promise;
+    } finally {
+      if (this.activeReconnectPromise === promise) {
+        this.activeReconnectPromise = null;
+      }
+    }
+  }
+
+  private async executeReconnectLoop(
+    roomId: string,
+    nickname: string,
+    token: number
+  ): Promise<boolean> {
     const startMs = Date.now();
-    this.setConnectionState('reconnecting', 'Attempting to restore connection...');
+    const deadlineMs = startMs + Math.max(20, this.reconnectTimeoutMs);
+    let failureReason = 'Reconnection timed out after maximum retries';
+
+    this.setConnectionState(
+      'reconnecting',
+      'Attempting to restore connection...'
+    );
 
     for (let attempt = 0; attempt < this.maxReconnectAttempts; attempt++) {
       if (this.reconnectCancelToken !== token) {
         this.isAutoReconnecting = false;
         return false;
       }
-      const elapsed = Date.now() - startMs;
-      if (elapsed >= this.reconnectTimeoutMs) {
+
+      const remainingBeforeDelay = deadlineMs - Date.now();
+      if (remainingBeforeDelay <= 0) {
         break;
       }
 
-      const delay = Math.min(
-        this.reconnectTimeoutMs - elapsed,
-        this.reconnectBaseDelayMs * Math.pow(2, attempt)
-      );
-      if (delay > 0) {
-        await new Promise((r) => setTimeout(r, delay));
+      const rawBackoff = this.reconnectBaseDelayMs * Math.pow(2, attempt);
+      // Reserve at least 65% of remaining deadline on first attempt so joinRoomWithTimeout always gets a budget
+      const maxDelayAllowed =
+        attempt === 0
+          ? Math.min(rawBackoff, Math.floor(remainingBeforeDelay * 0.35))
+          : Math.min(rawBackoff, Math.max(0, remainingBeforeDelay - 10));
+
+      if (maxDelayAllowed > 0) {
+        await new Promise((r) => setTimeout(r, maxDelayAllowed));
       }
+
       if (this.reconnectCancelToken !== token) {
         this.isAutoReconnecting = false;
         return false;
       }
 
+      const remainingForAttempt = deadlineMs - Date.now();
+      if (remainingForAttempt <= 0) {
+        break;
+      }
+
+      const attemptBudgetMs = Math.min(
+        this.reconnectAttemptTimeoutMs,
+        remainingForAttempt
+      );
+
       try {
-        const room = await this.client.joinById(roomId, {
-          nickname,
-          sessionToken: this.sessionToken,
-        });
+        const room = await this.joinRoomWithTimeout(
+          roomId,
+          {
+            nickname,
+            sessionToken: this.sessionToken,
+            reconnectOnly: true,
+          },
+          attemptBudgetMs,
+          token
+        );
+
+        if (this.reconnectCancelToken !== token) {
+          this.lateClosedRoomCount++;
+          try {
+            void room.leave(true);
+          } catch {
+            // Ignore
+          }
+          this.isAutoReconnecting = false;
+          return false;
+        }
+
         this.lastRoomId = room.roomId;
         this.isAutoReconnecting = false;
         await this.bindRoom(room);
         return true;
-      } catch {
-        // Continue to next backoff attempt
+      } catch (err: any) {
+        if (this.reconnectCancelToken !== token) {
+          this.isAutoReconnecting = false;
+          return false;
+        }
+        if (this.isTerminalReconnectError(err)) {
+          failureReason = err?.message || 'Session expired or room unavailable';
+          break;
+        }
       }
     }
 
     if (this.reconnectCancelToken === token) {
       this.isAutoReconnecting = false;
-      this.setConnectionState(
-        'disconnected',
-        'Reconnection timed out after maximum retries'
-      );
+      this.setConnectionState('disconnected', failureReason);
     }
     return false;
   }
@@ -361,9 +506,20 @@ export class NetworkClient {
   public cancelAutoReconnect(): void {
     this.reconnectCancelToken++;
     this.isAutoReconnecting = false;
+    this.activeReconnectPromise = null;
   }
 
   private bindRoom(room: Room): Promise<void> {
+    if (this.room && this.room !== room) {
+      const prevRoom = this.room;
+      this.room = null;
+      try {
+        void prevRoom.leave(true);
+      } catch {
+        // Ignore already closed socket
+      }
+    }
+
     this.room = room;
     this.myPlayerId = room.sessionId;
     this.lastReceivedServerTick = -1;
@@ -383,6 +539,7 @@ export class NetworkClient {
       room.onMessage(
         'session_welcome',
         (data: { playerId: string; sessionToken: string; roomCode: string }) => {
+          if (this.room !== room) return;
           this.myPlayerId = data.playerId;
           this.sessionToken = data.sessionToken;
           this.roomCode = data.roomCode;
@@ -390,7 +547,9 @@ export class NetworkClient {
       );
 
       room.onMessage('room_snapshot', (snap: NetRoomState) => {
+        if (this.room !== room) return;
         this.deliverWithSimulatedConditions(() => {
+          if (this.room !== room) return;
           // Ignore out-of-order older snapshots!
           if (snap.serverTick < this.lastReceivedServerTick) {
             return;
@@ -404,42 +563,47 @@ export class NetworkClient {
         });
       });
 
-    room.onMessage('combat_event', (evt: S2C_CombatEvent) => {
-      this.deliverWithSimulatedConditions(() => {
-        this.onCombatEvent?.(evt);
+      room.onMessage('combat_event', (evt: S2C_CombatEvent) => {
+        if (this.room !== room) return;
+        this.deliverWithSimulatedConditions(() => {
+          if (this.room !== room) return;
+          this.onCombatEvent?.(evt);
+        });
       });
-    });
 
-    room.onMessage('pong_rtt', (msg: S2C_PongRTT) => {
-      const sample = Math.max(1, Date.now() - msg.clientSendMs);
-      const effectiveSample = sample + this.netConditions.latencyMs;
-      this.jitterMsEstimate = Math.round(
-        this.jitterMsEstimate * 0.7 +
-          Math.abs(effectiveSample - this.rttMs) * 0.3
-      );
-      this.rttMs = Math.round(this.rttMs * 0.7 + effectiveSample * 0.3);
-    });
+      room.onMessage('pong_rtt', (msg: S2C_PongRTT) => {
+        if (this.room !== room) return;
+        const sample = Math.max(1, Date.now() - msg.clientSendMs);
+        const effectiveSample = sample + this.netConditions.latencyMs;
+        this.jitterMsEstimate = Math.round(
+          this.jitterMsEstimate * 0.7 +
+            Math.abs(effectiveSample - this.rttMs) * 0.3
+        );
+        this.rttMs = Math.round(this.rttMs * 0.7 + effectiveSample * 0.3);
+      });
 
-    room.onMessage('room_error', (err: S2C_RoomError) => {
-      this.onRoomError?.(err);
-    });
+      room.onMessage('room_error', (err: S2C_RoomError) => {
+        if (this.room !== room) return;
+        this.onRoomError?.(err);
+      });
 
-    room.onLeave((code) => {
-      if (this.pingTimer) {
-        clearInterval(this.pingTimer);
-        this.pingTimer = null;
-      }
-      // Code 1000 is normal consented leave; unexpected drop triggers bounded backoff reconnect
-      if (code !== 1000 && this.connectionState === 'connected') {
-        void this.reconnectWithBackoff(this.lastRoomId, this.lastNickname);
-      } else if (!this.isAutoReconnecting) {
-        this.setConnectionState('disconnected');
-      }
-    });
+      room.onLeave((code) => {
+        if (this.room !== room) return;
+        if (this.pingTimer) {
+          clearInterval(this.pingTimer);
+          this.pingTimer = null;
+        }
+        // Code 1000 is normal consented leave; unexpected drop triggers bounded backoff reconnect
+        if (code !== 1000 && this.connectionState === 'connected') {
+          void this.reconnectWithBackoff(this.lastRoomId, this.lastNickname);
+        } else if (!this.isAutoReconnecting) {
+          this.setConnectionState('disconnected', 'Disconnected from room');
+        }
+      });
 
       if (this.pingTimer) clearInterval(this.pingTimer);
       this.pingTimer = setInterval(() => {
-        if (this.room && this.connectionState === 'connected') {
+        if (this.room === room && this.connectionState === 'connected') {
           this.room.send('ping_rtt', { clientSendMs: Date.now() });
         }
       }, 1200);
@@ -498,16 +662,17 @@ export class NetworkClient {
       this.pingTimer = null;
     }
     if (this.room) {
+      const activeRoom = this.room;
+      this.room = null;
       try {
-        await this.room.leave(consented);
+        await activeRoom.leave(consented);
       } catch {
         // Ignore already closed socket
       }
-      this.room = null;
     }
     this.latestState = null;
     this.predictionHistory = [];
-    this.setConnectionState('disconnected');
+    this.setConnectionState('disconnected', 'Left room');
   }
 
   private setConnectionState(
@@ -515,6 +680,9 @@ export class NetworkClient {
     reason?: string
   ): void {
     this.connectionState = next;
+    if (reason !== undefined) {
+      this.lastDisconnectReason = reason;
+    }
     this.onConnectionChange?.(next, reason);
   }
 }

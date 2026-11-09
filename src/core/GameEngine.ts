@@ -165,15 +165,24 @@ export class GameEngine {
       this.ui.showCombatBanner(err.message);
     };
 
-    this.netClient.onConnectionChange = (connState) => {
-      if (
-        connState === 'reconnecting' &&
-        this.missions.mode === 'coop' &&
-        this.state === 'playing'
-      ) {
-        this.ui.showCombatBanner(
-          'CONNECTION INTERRUPTED — ATTEMPTING RECONNECT...'
-        );
+    this.netClient.onConnectionChange = (connState, reason) => {
+      if (this.missions.mode === 'coop' && this.state === 'playing') {
+        if (connState === 'reconnecting') {
+          this.ui.showCombatBanner(
+            'CONNECTION INTERRUPTED — ATTEMPTING RECONNECT...'
+          );
+        } else if (connState === 'disconnected') {
+          this.coopOverlayOpen = false;
+          this.input.setEnabled(false);
+          this.odm.releaseAll();
+          this.remotePlayers.clearAll();
+          this.missions.clearTitans();
+          this.state = 'lobby';
+          this.ui.showMultiplayerMenu();
+          this.ui.setMultiplayerError(
+            reason || 'Connection lost. Returned to Multiplayer Lobby.'
+          );
+        }
       }
     };
   }
@@ -535,6 +544,25 @@ export class GameEngine {
         this.actionCam.addShake(isCrit ? 0.36 : 0.2, 0.22);
       }
       this.ui.showCombatBanner(evt.message);
+    } else if (evt.type === 'thunder_spear_fired') {
+      // Spawn visual Thunder Spear projectile for remote teammates' launches
+      if (evt.attackerId !== myId) {
+        this.audio.playThunderSpearLaunch();
+        const origin = evt.origin
+          ? new THREE.Vector3(...evt.origin)
+          : impactPos.clone();
+        const target = evt.targetPos
+          ? new THREE.Vector3(...evt.targetPos)
+          : origin
+              .clone()
+              .addScaledVector(
+                evt.direction
+                  ? new THREE.Vector3(...evt.direction)
+                  : new THREE.Vector3(0, 0, -1),
+                40
+              );
+        this.vfx.spawnThunderSpearProjectile(origin, target);
+      }
     } else if (evt.type === 'thunder_spear_exploded') {
       this.audio.playThunderSpearExplosion();
       this.vfx.spawnThunderSpearExplosion(impactPos);
@@ -1224,11 +1252,15 @@ export class GameEngine {
     }
 
     if (bestTitan && bestDist <= 10.5) {
+      const camOrigin = this.actionCam.camera.position;
+      const camForward = this.actionCam.getForwardVector();
       this.lastAttackIntentSentAt = nowMs;
       this.netClient.sendAttackIntent({
         seq: this.netClient.nextInputSequence(),
         isHeavy: this.player.isBoosting || this.player.velocity.length() > 22,
         aimYaw: this.actionCam.yaw,
+        aimOrigin: [camOrigin.x, camOrigin.y, camOrigin.z],
+        aimDir: [camForward.x, camForward.y, camForward.z],
         targetTitanId: bestTitan.id,
         targetZone: bestZone,
         clientRttMs: this.netClient.rttMs,

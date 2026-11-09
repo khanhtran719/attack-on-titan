@@ -99,6 +99,15 @@ export interface NetPingMarker {
   createdAt: number;
 }
 
+export interface NetProjectileState {
+  id: string;
+  ownerId: string;
+  position: [number, number, number];
+  velocity: [number, number, number];
+  targetTitanId: string | null;
+  targetZone: TitanZoneType | null;
+}
+
 export interface NetRoomState {
   roomId: string;
   roomCode: string;
@@ -119,6 +128,7 @@ export interface NetRoomState {
   players: Record<string, NetPlayerState>;
   titans: Record<string, NetTitanState>;
   pings: NetPingMarker[];
+  projectiles?: NetProjectileState[];
 }
 
 export interface C2S_InputFrame {
@@ -185,9 +195,11 @@ export interface S2C_CombatEvent {
     | 'player_revived'
     | 'perfect_dodge'
     | 'resupply'
+    | 'thunder_spear_fired'
     | 'thunder_spear_exploded'
     | 'player_grabbed'
     | 'grab_escaped';
+  projectileId?: string;
   attackerId?: string;
   attackerName?: string;
   targetTitanId?: string;
@@ -197,6 +209,9 @@ export interface S2C_CombatEvent {
   damage?: number;
   speedMult?: number;
   glanced?: boolean;
+  origin?: [number, number, number];
+  direction?: [number, number, number];
+  targetPos?: [number, number, number];
   worldPos: [number, number, number];
   message: string;
 }
@@ -479,5 +494,170 @@ export function validateAttackIntent(
       typeof a.targetTitanId === 'string' ? a.targetTitanId : null,
     targetZone: isValidTitanZone(a.targetZone) ? a.targetZone : 'Nape',
     clientRttMs: rtt,
+  };
+}
+
+export interface AimValidationInput {
+  playerPos: [number, number, number];
+  aimOrigin: [number, number, number];
+  aimDir: [number, number, number];
+  lastCamForward?: [number, number, number] | null;
+  targetPos: [number, number, number];
+  targetRadius: number;
+  maxRange: number;
+  maxHalfConeDeg?: number;
+}
+
+export interface AimValidationResult {
+  valid: boolean;
+  reason:
+    | 'OK'
+    | 'OUT_OF_RANGE'
+    | 'INVALID_AIM_ORIGIN'
+    | 'AIM_DIR_MISMATCH'
+    | 'BEHIND_PLAYER'
+    | 'OUTSIDE_AIM_CONE';
+  dotAim: number;
+  dotPlayerForward: number;
+}
+
+/**
+ * Validates that a targeted Titan hurtbox lies within a legitimate forward aim cone / FOV
+ * relative to the player's position, validated camera origin, and authoritative look direction.
+ * Rejects targets behind the player's back, outside the FOV cone, or with spoofed aim origins/directions.
+ */
+export function validateTargetLockAim(
+  input: AimValidationInput
+): AimValidationResult {
+  const {
+    playerPos,
+    aimOrigin,
+    aimDir,
+    lastCamForward,
+    targetPos,
+    targetRadius,
+    maxRange,
+    maxHalfConeDeg = 50,
+  } = input;
+
+  // 1. Validate aimOrigin proximity to player position (third-person camera is within ~6.5m)
+  const originDist = Math.hypot(
+    aimOrigin[0] - playerPos[0],
+    aimOrigin[1] - playerPos[1],
+    aimOrigin[2] - playerPos[2]
+  );
+  if (!Number.isFinite(originDist) || originDist > 10.0) {
+    return {
+      valid: false,
+      reason: 'INVALID_AIM_ORIGIN',
+      dotAim: -1,
+      dotPlayerForward: -1,
+    };
+  }
+
+  // 2. Normalize aimDir and verify against authoritative camera forward if present
+  const aimLen = Math.hypot(aimDir[0], aimDir[1], aimDir[2]);
+  if (!Number.isFinite(aimLen) || aimLen < 0.01) {
+    return {
+      valid: false,
+      reason: 'AIM_DIR_MISMATCH',
+      dotAim: -1,
+      dotPlayerForward: -1,
+    };
+  }
+  const ax = aimDir[0] / aimLen;
+  const ay = aimDir[1] / aimLen;
+  const az = aimDir[2] / aimLen;
+
+  if (lastCamForward && isValidFiniteVec3(lastCamForward)) {
+    const lfLen = Math.hypot(
+      lastCamForward[0],
+      lastCamForward[1],
+      lastCamForward[2]
+    );
+    if (lfLen > 0.01) {
+      const lfx = lastCamForward[0] / lfLen;
+      const lfy = lastCamForward[1] / lfLen;
+      const lfz = lastCamForward[2] / lfLen;
+      const dotCamConsistency = ax * lfx + ay * lfy + az * lfz;
+      // Allow up to ~81 deg rapid flick between input_frame and attack_intent; reject backwards spoofing
+      if (dotCamConsistency < 0.15) {
+        return {
+          valid: false,
+          reason: 'AIM_DIR_MISMATCH',
+          dotAim: dotCamConsistency,
+          dotPlayerForward: dotCamConsistency,
+        };
+      }
+    }
+  }
+
+  // 3. Validate distance from player to target hurtbox
+  const chestX = playerPos[0];
+  const chestY = playerPos[1] + 1.4;
+  const chestZ = playerPos[2];
+  const dxPlayer = targetPos[0] - chestX;
+  const dyPlayer = targetPos[1] - chestY;
+  const dzPlayer = targetPos[2] - chestZ;
+  const distPlayer = Math.hypot(dxPlayer, dyPlayer, dzPlayer);
+
+  if (!Number.isFinite(distPlayer) || distPlayer > maxRange + targetRadius) {
+    return {
+      valid: false,
+      reason: 'OUT_OF_RANGE',
+      dotAim: 0,
+      dotPlayerForward: 0,
+    };
+  }
+
+  // 4. Reject targets behind the player's back (rear hemisphere relative to player chest along aimDir)
+  let dotPlayerForward = 1.0;
+  if (distPlayer > 0.01) {
+    dotPlayerForward =
+      (dxPlayer * ax + dyPlayer * ay + dzPlayer * az) / distPlayer;
+  }
+  if (distPlayer > targetRadius + 1.2 && dotPlayerForward < 0) {
+    return {
+      valid: false,
+      reason: 'BEHIND_PLAYER',
+      dotAim: dotPlayerForward,
+      dotPlayerForward,
+    };
+  }
+
+  // 5. Validate target lies within forward aim cone / FOV from aimOrigin
+  const dxCam = targetPos[0] - aimOrigin[0];
+  const dyCam = targetPos[1] - aimOrigin[1];
+  const dzCam = targetPos[2] - aimOrigin[2];
+  const distCam = Math.hypot(dxCam, dyCam, dzCam);
+  let dotAim = 1.0;
+  if (distCam > 0.01) {
+    dotAim = (dxCam * ax + dyCam * ay + dzCam * az) / distCam;
+  }
+
+  const angularAllowanceRad = Math.atan2(
+    Math.max(0.5, targetRadius + 1.2),
+    Math.max(1.5, distCam)
+  );
+  const halfConeRad = Math.min(
+    (72 * Math.PI) / 180,
+    (maxHalfConeDeg * Math.PI) / 180 + angularAllowanceRad
+  );
+  const minConeDot = Math.cos(halfConeRad);
+
+  if (dotAim < minConeDot) {
+    return {
+      valid: false,
+      reason: 'OUTSIDE_AIM_CONE',
+      dotAim,
+      dotPlayerForward,
+    };
+  }
+
+  return {
+    valid: true,
+    reason: 'OK',
+    dotAim,
+    dotPlayerForward,
   };
 }

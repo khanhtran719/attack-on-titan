@@ -15,6 +15,7 @@ import {
   NetPlayerState,
   QUICK_CHAT_PRESETS,
   sanitizeNickname,
+  validateTargetLockAim,
 } from '../src/shared/Protocol';
 import { ServerTitan } from '../src/shared/ServerTitanSim';
 import {
@@ -935,7 +936,9 @@ describe('Titan Hunter 3D — Multiplayer Co-op Suite', () => {
     );
     expect(p1.grabbedByTitanId).toBe(titan2.id);
 
-    // Player 2 fires a Thunder Spear at titan2's Nape from 25m away!
+    // Player 2 fires a Thunder Spear at titan2's Nape from 22m away in an open corridor!
+    titan2.position.set(0, 0, -25);
+    titan2.syncHurtboxWorldPositions();
     p2.position.copy(titan2.position).add(new THREE.Vector3(0, 8.0, -22.0));
     expect(p2.thunderSpears).toBe(4);
     const prevAssists = p2.assists;
@@ -944,7 +947,7 @@ describe('Titan Hunter 3D — Multiplayer Co-op Suite', () => {
       seq: 201,
       isHeavy: true,
       weaponType: 'thunder_spear',
-      aimYaw: 0,
+      aimYaw: Math.PI,
       aimOrigin: [p2.position.x, p2.position.y + 1.5, p2.position.z],
       aimDir: [0, 0, 1],
       targetTitanId: titan2.id,
@@ -953,7 +956,17 @@ describe('Titan Hunter 3D — Multiplayer Co-op Suite', () => {
     });
 
     expect(p2.thunderSpears).toBe(3);
-    // Player 1 is immediately rescued from titan2's grab!
+    // On launch tick, projectile is in flight and has not detonated yet
+    expect(room.getActiveProjectiles().length).toBe(1);
+    expect(p1.grabbedByTitanId).toBe(titan2.id);
+
+    // Step simulation ticks so the 95 m/s Thunder Spear travels 22m and impacts titan2
+    for (let i = 0; i < 20; i++) {
+      (room as any).stepAuthoritativeSimulation(1 / 60);
+    }
+
+    // Player 1 is now rescued upon authoritative projectile impact!
+    expect(room.getActiveProjectiles().length).toBe(0);
     expect(p1.grabbedByTitanId).toBeNull();
     expect(titan2.grabbedPlayerId).toBeNull();
     expect(p2.assists).toBeGreaterThan(prevAssists);
@@ -1200,6 +1213,11 @@ describe('Titan Hunter 3D — Multiplayer Co-op Suite', () => {
       clientRttMs: 20,
     });
 
+    // Step simulation ticks so the projectile flies into the South face of the wall at Z = +3.0
+    for (let i = 0; i < 10; i++) {
+      (room as any).stepAuthoritativeSimulation(1 / 60);
+    }
+
     // Thunder Spear was consumed, detonated against the South face of the wall (Z >= 2.9), and dealt 0 damage to the Titan behind the wall!
     expect(p1.thunderSpears).toBe(3);
     expect(titan.hurtboxes.Nape.hp).toBe(initialNapeHp);
@@ -1406,5 +1424,569 @@ describe('Titan Hunter 3D — Multiplayer Co-op Suite', () => {
 
     room.onDispose();
     expect(room.getPhysicsWorld().getPlayerActorCount()).toBe(0);
+  });
+
+  it('17. P1 Server-Authoritative Thunder Spear Flight: 0 damage before impact tick, swept anti-tunneling on large tick & AoE deduplication', async () => {
+    const room = new CoopHunterRoom();
+    (room as any).roomId = 'test_p1_projectile_flight';
+    (room as any).setPrivate = async () => {};
+    (room as any).setMetadata = async () => {};
+    const combatEvents: any[] = [];
+    (room as any).broadcast = (type: string, payload: any) => {
+      if (type === 'combat_event') combatEvents.push(payload);
+    };
+    const handlers = new Map<string, (client: any, payload: any) => void>();
+    (room as any).onMessage = (
+      type: string,
+      cb: (client: any, payload: any) => void
+    ) => {
+      handlers.set(type, cb);
+    };
+
+    await room.onCreate({ roomName: 'Projectile Flight Test', isPublic: true });
+    const c1 = createMockClient('flight_p1');
+    room.onJoin(c1 as any, { nickname: 'Hange' });
+    handlers.get('lobby_action')!(c1, { action: 'start_match' });
+
+    const attackHandler = handlers.get('attack_intent')!;
+    const p1 = ((room as any).players as Map<string, any>).get('flight_p1')!;
+    const titans = Array.from(
+      ((room as any).titans as Map<string, ServerTitan>).values()
+    );
+    const titanA = titans[0];
+    const titanB = titans[1];
+
+    // Place Player at (10, 2.0, 20) facing North (-Z) along the open avenue (clear of Central Bell Tower at x=0),
+    // and Titan A at (10, 0, -18) (~38m away -> ~24 ticks at 95 m/s)
+    p1.position.set(10, 2.0, 20);
+    room.getPhysicsWorld().setPlayerPosition(p1.position, 'flight_p1');
+    titanA.position.set(10, 0, -18);
+    titanA.yaw = 0;
+    titanA.syncHurtboxWorldPositions();
+
+    // Place Titan B right next to Titan A (within 4.5m AoE splash radius) to test multi-Titan AoE & anti-duplicate damage
+    titanB.position.set(13.5, 0, -18);
+    titanB.yaw = 0;
+    titanB.syncHurtboxWorldPositions();
+
+    const initialNapeA = titanA.hurtboxes.Nape.hp;
+    const initialRightLegB = titanB.hurtboxes.RightLeg.hp;
+
+    // 1. Fire Thunder Spear at Titan A's LeftLeg from 38m away
+    attackHandler(c1, {
+      seq: 1,
+      isHeavy: true,
+      weaponType: 'thunder_spear',
+      aimYaw: 0,
+      aimOrigin: [10, 3.4, 20],
+      aimDir: [0, -0.05, -1],
+      targetTitanId: titanA.id,
+      targetZone: 'LeftLeg',
+      clientRttMs: 20,
+    });
+
+    // Immediately after attack_intent: thunder_spear_fired emitted, 0 explosions, 0 damage dealt!
+    expect(combatEvents.some((e) => e.type === 'thunder_spear_fired')).toBe(
+      true
+    );
+    expect(combatEvents.some((e) => e.type === 'thunder_spear_exploded')).toBe(
+      false
+    );
+    expect(titanA.hurtboxes.LeftLeg.hp).toBe(titanA.hurtboxes.LeftLeg.maxHp);
+    expect(room.getActiveProjectiles()).toHaveLength(1);
+    expect(room.getRoomSnapshot().projectiles).toHaveLength(1);
+
+    // Step 10 ticks (~15.8m traveled out of 38m): projectile is mid-flight, STILL 0 damage!
+    for (let t = 0; t < 10; t++) {
+      (room as any).stepAuthoritativeSimulation(1 / 60);
+    }
+    expect(room.getActiveProjectiles()).toHaveLength(1);
+    expect(titanA.hurtboxes.LeftLeg.hp).toBe(titanA.hurtboxes.LeftLeg.maxHp);
+    expect(combatEvents.some((e) => e.type === 'thunder_spear_exploded')).toBe(
+      false
+    );
+
+    // Step remaining ticks until impact (~18 more ticks)
+    for (let t = 0; t < 18; t++) {
+      (room as any).stepAuthoritativeSimulation(1 / 60);
+    }
+
+    // Projectile has now impacted Titan A's LeftLeg and triggered AoE splash onto nearby Titan B!
+    expect(room.getActiveProjectiles()).toHaveLength(0);
+    expect(titanA.hurtboxes.LeftLeg.hp).toBe(0);
+    expect(titanB.hurtboxes.RightLeg.hp).toBeLessThan(initialRightLegB);
+    const explodeEvents = combatEvents.filter(
+      (e) => e.type === 'thunder_spear_exploded'
+    );
+    expect(explodeEvents).toHaveLength(1);
+
+    // 2. Swept Anti-Tunneling Test on Large Tick (dt = 0.14s -> 13.3m step in a single tick!)
+    // Place Titan A at (10, 0, -8.5) and Player at (10, 7.2, 0) (8.5m apart, smaller than a single 13.3m step!)
+    p1.nextThunderSpearAllowedMs = 0;
+    p1.position.set(10, 7.2, 0);
+    titanA.position.set(10, 0, -8.5);
+    titanA.yaw = 0;
+    titanA.syncHurtboxWorldPositions();
+    const killsBefore = room.getRoomSnapshot().totalKills;
+
+    attackHandler(c1, {
+      seq: 2,
+      isHeavy: true,
+      weaponType: 'thunder_spear',
+      aimYaw: 0,
+      aimOrigin: [10, 8.6, 0],
+      aimDir: [0, 0, -1],
+      targetTitanId: titanA.id,
+      targetZone: 'Nape',
+      clientRttMs: 0,
+    });
+    expect(room.getActiveProjectiles()).toHaveLength(1);
+
+    // Advance by a single large tick (dt = 0.14s -> 13.3m movement > 8.5m distance to Nape):
+    // Swept segment-sphere intersection MUST catch the Nape hurtbox mid-segment and not tunnel past it!
+    (room as any).stepAuthoritativeSimulation(0.14);
+    expect(room.getActiveProjectiles()).toHaveLength(0);
+    expect(titanA.hurtboxes.Nape.hp).toBeLessThan(initialNapeA);
+    expect(titanA.isDead()).toBe(true);
+    // Ensure exactly 1 kill was counted (no double-kill from multi-zone AoE splash)
+    expect(room.getRoomSnapshot().totalKills).toBe(killsBefore + 1);
+
+    room.onDispose();
+  });
+
+  it('18. P1 Target Lock & Aim Cone Validation: accepts forward lock and rejects targets behind back, outside FOV, or with spoofed aimDir', async () => {
+    // 1. Direct unit checks on validateTargetLockAim
+    const forwardOk = validateTargetLockAim({
+      playerPos: [0, 1, 20],
+      aimOrigin: [0, 2.5, 24],
+      aimDir: [0, 0, -1],
+      lastCamForward: [0, 0, -1],
+      targetPos: [4, 8, -10],
+      targetRadius: 1.5,
+      maxRange: 75,
+    });
+    expect(forwardOk.valid).toBe(true);
+    expect(forwardOk.reason).toBe('OK');
+
+    const behindPlayer = validateTargetLockAim({
+      playerPos: [0, 1, 20],
+      aimOrigin: [0, 2.5, 24],
+      aimDir: [0, 0, -1],
+      lastCamForward: [0, 0, -1],
+      targetPos: [0, 8, 45], // Behind player (+Z while aiming -Z)
+      targetRadius: 1.5,
+      maxRange: 75,
+    });
+    expect(behindPlayer.valid).toBe(false);
+    expect(behindPlayer.reason).toBe('BEHIND_PLAYER');
+
+    const outsideCone = validateTargetLockAim({
+      playerPos: [0, 1, 20],
+      aimOrigin: [0, 2.5, 24],
+      aimDir: [0, 0, -1],
+      lastCamForward: [0, 0, -1],
+      targetPos: [38, 8, 16], // ~84 deg off-axis to the right
+      targetRadius: 1.5,
+      maxRange: 75,
+    });
+    expect(outsideCone.valid).toBe(false);
+    expect(outsideCone.reason).toBe('OUTSIDE_AIM_CONE');
+
+    const spoofedAimOrigin = validateTargetLockAim({
+      playerPos: [0, 1, 20],
+      aimOrigin: [0, 8, -30], // Spoofed 50m away from player
+      aimDir: [0, 0, -1],
+      lastCamForward: [0, 0, -1],
+      targetPos: [0, 8, -40],
+      targetRadius: 1.5,
+      maxRange: 75,
+    });
+    expect(spoofedAimOrigin.valid).toBe(false);
+    expect(spoofedAimOrigin.reason).toBe('INVALID_AIM_ORIGIN');
+
+    // 2. Authoritative Server Enforcement in CoopHunterRoom
+    const room = new CoopHunterRoom();
+    (room as any).roomId = 'test_p1_aim_validation';
+    (room as any).setPrivate = async () => {};
+    (room as any).setMetadata = async () => {};
+    (room as any).broadcast = () => {};
+    const handlers = new Map<string, (client: any, payload: any) => void>();
+    (room as any).onMessage = (
+      type: string,
+      cb: (client: any, payload: any) => void
+    ) => {
+      handlers.set(type, cb);
+    };
+
+    await room.onCreate({ roomName: 'Aim Validation Audit', isPublic: true });
+    const c1 = createMockClient('aim_p1');
+    room.onJoin(c1 as any, { nickname: 'Mikasa' });
+    handlers.get('lobby_action')!(c1, { action: 'start_match' });
+
+    const inputHandler = handlers.get('input_frame')!;
+    const attackHandler = handlers.get('attack_intent')!;
+    const p1 = ((room as any).players as Map<string, any>).get('aim_p1')!;
+    const titan = Array.from(
+      ((room as any).titans as Map<string, ServerTitan>).values()
+    )[0];
+
+    // Player at (0, 2, 0) looking North (-Z), Titan placed BEHIND player's back at (0, 0, +22) (South)
+    p1.position.set(0, 2, 0);
+    room.getPhysicsWorld().setPlayerPosition(p1.position, 'aim_p1');
+    titan.position.set(0, 0, 22);
+    titan.syncHurtboxWorldPositions();
+    const initialNapeHp = titan.hurtboxes.Nape.hp;
+
+    // Player sends input_frame looking North (-Z)
+    inputHandler(
+      c1,
+      makeBaseInputFrame(1, {
+        yaw: 0,
+        camOrigin: [0, 3.6, 4],
+        camForward: [0, 0, -1],
+      })
+    );
+    (room as any).stepAuthoritativeSimulation(1 / 60);
+
+    // Case A: Client sends targetTitanId of Titan behind their back while aiming North (-Z)
+    const prevRejectedLocks = room.rejectedTargetLockCount;
+    attackHandler(c1, {
+      seq: 1,
+      isHeavy: true,
+      weaponType: 'thunder_spear',
+      aimYaw: 0,
+      aimOrigin: [0, 3.6, 0],
+      aimDir: [0, 0, -1],
+      targetTitanId: titan.id,
+      targetZone: 'Nape',
+      clientRttMs: 20,
+    });
+    expect(room.rejectedTargetLockCount).toBeGreaterThan(prevRejectedLocks);
+
+    // Projectile must fly North (-Z) and NEVER steer backward to hit the Titan at +Z!
+    const proj = room.getActiveProjectiles()[0];
+    expect(proj).toBeDefined();
+    expect(proj.direction.z).toBeLessThan(-0.9);
+    for (let i = 0; i < 20; i++) {
+      (room as any).stepAuthoritativeSimulation(1 / 60);
+    }
+    expect(titan.hurtboxes.Nape.hp).toBe(initialNapeHp);
+
+    // Case B: Client tries to spoof aimDir = [0, 0, +1] (opposite to their authoritative input_frame camForward [0, 0, -1])
+    p1.nextThunderSpearAllowedMs = 0;
+    const prevRejected2 = room.rejectedTargetLockCount;
+    attackHandler(c1, {
+      seq: 2,
+      isHeavy: true,
+      weaponType: 'thunder_spear',
+      aimYaw: Math.PI,
+      aimOrigin: [0, 3.6, 0],
+      aimDir: [0, 0, 1], // Spoofed 180 deg opposite to active camera forward!
+      targetTitanId: titan.id,
+      targetZone: 'Nape',
+      clientRttMs: 20,
+    });
+    expect(room.rejectedTargetLockCount).toBeGreaterThan(prevRejected2);
+    for (let i = 0; i < 20; i++) {
+      (room as any).stepAuthoritativeSimulation(1 / 60);
+    }
+    expect(titan.hurtboxes.Nape.hp).toBe(initialNapeHp);
+
+    room.onDispose();
+  });
+
+  it('19. P1 4-Player Simultaneous Thunder Spear Volley: independent projectile tracking and synchronized impacts', async () => {
+    const room = new CoopHunterRoom();
+    (room as any).roomId = 'test_p1_4p_volley';
+    (room as any).setPrivate = async () => {};
+    (room as any).setMetadata = async () => {};
+    const combatEvents: any[] = [];
+    (room as any).broadcast = (type: string, payload: any) => {
+      if (type === 'combat_event') combatEvents.push(payload);
+    };
+    const handlers = new Map<string, (client: any, payload: any) => void>();
+    (room as any).onMessage = (
+      type: string,
+      cb: (client: any, payload: any) => void
+    ) => {
+      handlers.set(type, cb);
+    };
+
+    await room.onCreate({ roomName: '4P Thunder Volley', isPublic: true });
+    const clients = [
+      createMockClient('v_p1'),
+      createMockClient('v_p2'),
+      createMockClient('v_p3'),
+      createMockClient('v_p4'),
+    ];
+    clients.forEach((c, idx) =>
+      room.onJoin(c as any, { nickname: `Scout${idx + 1}` })
+    );
+    const lobbyHandler = handlers.get('lobby_action')!;
+    lobbyHandler(clients[1], { action: 'ready' });
+    lobbyHandler(clients[2], { action: 'ready' });
+    lobbyHandler(clients[3], { action: 'ready' });
+    lobbyHandler(clients[0], { action: 'start_match' });
+
+    const attackHandler = handlers.get('attack_intent')!;
+    const playersMap = (room as any).players as Map<string, any>;
+    const titans = Array.from(
+      ((room as any).titans as Map<string, ServerTitan>).values()
+    );
+
+    // Position 4 players in an arc facing 4 distinct Titans in open space
+    for (let i = 0; i < 4; i++) {
+      const p = playersMap.get(`v_p${i + 1}`)!;
+      const t = titans[i];
+      const xOffset = (i - 1.5) * 14;
+      p.position.set(xOffset, 8.0, 10);
+      t.position.set(xOffset, 0, -12);
+      t.yaw = 0;
+      t.syncHurtboxWorldPositions();
+
+      attackHandler(clients[i], {
+        seq: 1,
+        isHeavy: true,
+        weaponType: 'thunder_spear',
+        aimYaw: 0,
+        aimOrigin: [xOffset, 9.4, 10],
+        aimDir: [0, 0, -1],
+        targetTitanId: t.id,
+        targetZone: 'Nape',
+        clientRttMs: 25,
+      });
+    }
+
+    // All 4 projectiles are simultaneously active in server simulation and room snapshot
+    expect(room.getActiveProjectiles()).toHaveLength(4);
+    expect(room.getRoomSnapshot().projectiles).toHaveLength(4);
+    expect(
+      combatEvents.filter((e) => e.type === 'thunder_spear_fired')
+    ).toHaveLength(4);
+
+    // Step 20 ticks so all 4 projectiles reach their targets (~22m)
+    for (let tick = 0; tick < 20; tick++) {
+      (room as any).stepAuthoritativeSimulation(1 / 60);
+    }
+
+    expect(room.getActiveProjectiles()).toHaveLength(0);
+    expect(
+      combatEvents.filter((e) => e.type === 'thunder_spear_exploded')
+    ).toHaveLength(4);
+    for (let i = 0; i < 4; i++) {
+      expect(titans[i].isDead()).toBe(true);
+      const p = playersMap.get(`v_p${i + 1}`)!;
+      expect(p.kills).toBe(1);
+    }
+
+    room.onDispose();
+  });
+
+  it('20. P1 Reconnection Timeout & Late-Socket Cleanup: hung joinById times out on deadline and late-resolving rooms close immediately', async () => {
+    const net = new NetworkClient('localhost:2567');
+    net.sessionToken = 'st_valid_token_for_timeout_test_12345678901234567890';
+    net.maxReconnectAttempts = 3;
+    net.reconnectBaseDelayMs = 15;
+    net.reconnectAttemptTimeoutMs = 60;
+    net.reconnectTimeoutMs = 160;
+
+    let lateRoomLeaveCalled = 0;
+    // Simulate a hung joinById that resolves 300ms later (well after the 60ms attempt timeout & 160ms overall deadline)
+    (net as any).client = {
+      joinById: () =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({
+              roomId: 'late_orphan_room',
+              sessionId: 'orphan_sess',
+              leave: async () => {
+                lateRoomLeaveCalled++;
+              },
+              onMessage: () => {},
+              onLeave: () => {},
+            });
+          }, 260);
+        }),
+    };
+
+    const t0 = Date.now();
+    const ok = await net.reconnectWithBackoff('hung_room_id', 'Levi');
+    const elapsedMs = Date.now() - t0;
+
+    // Must time out promptly near reconnectTimeoutMs (160ms), NOT waiting for the 260ms hung promise!
+    expect(ok).toBe(false);
+    expect(elapsedMs).toBeLessThan(240);
+    expect(net.connectionState).toBe('disconnected');
+
+    // Wait for the late joinById promises to resolve and verify they were immediately closed via leave(true)
+    await new Promise((r) => setTimeout(r, 150));
+    expect(net.lateClosedRoomCount).toBeGreaterThanOrEqual(1);
+    expect(lateRoomLeaveCalled).toBeGreaterThanOrEqual(1);
+    expect(net.room).toBeNull();
+    expect(net.connectionState).toBe('disconnected');
+  });
+
+  it('21. P1 Session Grace Period Lifecycle, Terminal Expiration & Stale Room Callback Isolation', async () => {
+    const room = new CoopHunterRoom();
+    (room as any).roomId = 'test_p1_session_lifecycle';
+    (room as any).setPrivate = async () => {};
+    (room as any).setMetadata = async () => {};
+    (room as any).broadcast = () => {};
+    const handlers = new Map<string, (client: any, payload: any) => void>();
+    (room as any).onMessage = (
+      type: string,
+      cb: (client: any, payload: any) => void
+    ) => {
+      handlers.set(type, cb);
+    };
+
+    await room.onCreate({ roomName: 'Session Lifecycle', isPublic: true });
+    const c1 = createMockClient('life_p1');
+    room.onJoin(c1 as any, { nickname: 'Armin' });
+    handlers.get('lobby_action')!(c1, { action: 'start_match' });
+
+    const welcome = c1.sentMessages.find((m) => m.type === 'session_welcome')
+      ?.payload;
+    expect(welcome?.sessionToken).toMatch(/^st_/);
+
+    // Advance player sequence numbers before disconnect
+    const inputHandler = handlers.get('input_frame')!;
+    inputHandler(c1, makeBaseInputFrame(50, { moveForward: 1 }));
+    (room as any).stepAuthoritativeSimulation(1 / 60);
+
+    // Reconnect with valid session token on a new client starting at seq = 1
+    const c1New = createMockClient('life_p1_reborn');
+    expect(
+      room.onAuth(c1New as any, {
+        nickname: 'Armin',
+        sessionToken: welcome.sessionToken,
+        reconnectOnly: true,
+      })
+    ).toBe(true);
+    room.onJoin(c1New as any, {
+      nickname: 'Armin',
+      sessionToken: welcome.sessionToken,
+      reconnectOnly: true,
+    });
+
+    // Verify new client can immediately send seq = 1 without being rejected by pre-disconnect lastReceivedSeq (50)!
+    const rejectedBefore = room.rejectedInputCount;
+    inputHandler(c1New, makeBaseInputFrame(1, { moveForward: 1 }));
+    (room as any).stepAuthoritativeSimulation(1 / 60);
+    expect(room.rejectedInputCount).toBe(rejectedBefore);
+
+    // Now test terminal SESSION_EXPIRED rejection when reconnectOnly = true with an expired/invalid token
+    expect(() =>
+      room.onAuth(createMockClient('expired_client') as any, {
+        nickname: 'Armin',
+        sessionToken: 'st_expired_or_unknown_token_00000000000000000000',
+        reconnectOnly: true,
+      })
+    ).toThrow(/SESSION_EXPIRED/);
+
+    // Verify NetworkClient aborts retry loop immediately on terminal SESSION_EXPIRED error
+    const net = new NetworkClient('localhost:2567');
+    net.sessionToken = 'st_expired_or_unknown_token_00000000000000000000';
+    net.maxReconnectAttempts = 5;
+    net.reconnectBaseDelayMs = 50;
+    net.reconnectTimeoutMs = 2000;
+    let joinCalls = 0;
+    (net as any).client = {
+      joinById: async () => {
+        joinCalls++;
+        throw new Error(
+          'SESSION_EXPIRED: Reconnection session token is invalid or expired.'
+        );
+      },
+    };
+    const res = await net.reconnectWithBackoff('test_p1_session_lifecycle', 'Armin');
+    expect(res).toBe(false);
+    // Terminal error must abort on the very first attempt (1 call instead of 5)
+    expect(joinCalls).toBe(1);
+    expect(net.connectionState).toBe('disconnected');
+    expect(net.lastDisconnectReason).toMatch(/SESSION_EXPIRED/);
+
+    room.onDispose();
+  });
+
+  it('22. P1 Full Co-op Gameplay Stability under simulated RTT 50/100/200ms, jitter & packet loss', async () => {
+    for (const rttMs of [50, 100, 200]) {
+      const room = new CoopHunterRoom();
+      (room as any).roomId = `test_lag_${rttMs}`;
+      (room as any).setPrivate = async () => {};
+      (room as any).setMetadata = async () => {};
+      const combatEvents: any[] = [];
+      (room as any).broadcast = (type: string, payload: any) => {
+        if (type === 'combat_event') combatEvents.push(payload);
+      };
+      const handlers = new Map<string, (client: any, payload: any) => void>();
+      (room as any).onMessage = (
+        type: string,
+        cb: (client: any, payload: any) => void
+      ) => {
+        handlers.set(type, cb);
+      };
+
+      await room.onCreate({ roomName: `Lag ${rttMs}ms`, isPublic: true });
+      const c1 = createMockClient(`lag_p1_${rttMs}`);
+      room.onJoin(c1 as any, { nickname: 'Levi' });
+      handlers.get('lobby_action')!(c1, { action: 'start_match' });
+
+      const inputHandler = handlers.get('input_frame')!;
+      const attackHandler = handlers.get('attack_intent')!;
+      const p1 = ((room as any).players as Map<string, any>).get(
+        `lag_p1_${rttMs}`
+      )!;
+      const titan = Array.from(
+        ((room as any).titans as Map<string, ServerTitan>).values()
+      )[0];
+
+      // Position Titan in front of player along the x=10 avenue (clear of Central Bell Tower at x=0)
+      p1.position.set(10, 4.0, 16);
+      room.getPhysicsWorld().setPlayerPosition(p1.position, `lag_p1_${rttMs}`);
+      titan.position.set(10, 0, -10);
+      titan.yaw = 0;
+      titan.syncHurtboxWorldPositions();
+
+      for (let seq = 1; seq <= 20; seq++) {
+        p1.packetsThisSecond = 0;
+        // Simulate 10% packet drop on intermediate input frames (except frame 1 and 20)
+        if (seq === 1 || seq === 20 || seq % 7 !== 0) {
+          inputHandler(
+            c1,
+            makeBaseInputFrame(seq, {
+              moveForward: 1,
+              boostHeld: true,
+              camOrigin: [p1.position.x, p1.position.y + 1.6, p1.position.z + 3],
+              camForward: [0, 0, -1],
+            })
+          );
+        }
+        if (seq === 2) {
+          attackHandler(c1, {
+            seq: 1,
+            isHeavy: true,
+            weaponType: 'thunder_spear',
+            aimYaw: 0,
+            aimOrigin: [p1.position.x, p1.position.y + 1.4, p1.position.z],
+            aimDir: [0, 0, -1],
+            targetTitanId: titan.id,
+            targetZone: 'Nape',
+            clientRttMs: rttMs,
+          });
+        }
+        (room as any).stepAuthoritativeSimulation(1 / 60);
+      }
+
+      expect(
+        combatEvents.some((e) => e.type === 'thunder_spear_exploded')
+      ).toBe(true);
+      expect(titan.isDead()).toBe(true);
+      expect(Number.isFinite(p1.position.x)).toBe(true);
+      expect(Number.isFinite(p1.position.y)).toBe(true);
+      expect(Number.isFinite(p1.position.z)).toBe(true);
+
+      room.onDispose();
+    }
   });
 });

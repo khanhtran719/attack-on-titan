@@ -19,6 +19,9 @@ This document records the comprehensive technical, physics, combat, security, an
 | **P1-2** | **P1** | Session Token Security & Reconnect Backoff | `CoopHunterRoom` used predictable `tok_${sessionId}_${Date.now()}` tokens and accepted client-provided `sessionToken` on initial join; `NetworkClient` entered `reconnecting` state on unexpected drop without bounded exponential backoff or timeout. | **FIXED** |
 | **P1-3** | **P1** | WASM / Three.js Resource Disposal & Metrics | `PhysicsWorld.clearStaticWorld()` created a new `RAPIER.World` without freeing the previous WASM world/controllers; `TitanEntity` and `RemotePlayerManager` needed geometry/material disposal on cleanup; server lacked tick duration/overrun metrics. | **FIXED** |
 | **P1-4** | **P1** | CI/CD Pipeline & Regression Suite | Repository lacked a GitHub Actions workflow (`.github/workflows/ci.yml`) and dedicated security/hardening regression tests for the 10 mandatory scenarios. | **FIXED** |
+| **P1-5** | **P1** | Server-Authoritative Thunder Spear Projectile | `handleAuthoritativeThunderSpear` previously resolved detonation and applied damage on the exact tick `attack_intent` arrived while the client rendered a `95 m/s` flying rocket. | **FIXED** |
+| **P1-6** | **P1** | Target Lock & Aim Cone Validation | Server validated distance and Line-of-Sight for `targetTitanId`, but did not verify that the target lay within a forward FOV / aim cone or that `aimDir` matched the player's authoritative facing/camera state. | **FIXED** |
+| **P1-7** | **P1** | Reconnection Per-Attempt Timeout & Late Socket Cleanup | `NetworkClient.reconnectWithBackoff` checked elapsed time between attempts, but an individual hung `client.joinById(...)` had no per-attempt timeout and could hang beyond `reconnectTimeoutMs` or resolve late and leave an orphan socket. | **FIXED** |
 
 ---
 
@@ -64,3 +67,51 @@ This document records the comprehensive technical, physics, combat, security, an
 - Added `.github/workflows/ci.yml` for automated asset generation, TypeScript typechecking, Vite production build, and Vitest test execution.
 - Updated `Dockerfile`, `Dockerfile.client`, `Dockerfile.server`, and `docker-compose.yml` for reproducible builds.
 - Added comprehensive unit & integration tests covering all 10 mandatory regression scenarios in `tests/multiplayer.test.ts` and `tests/gameplay.test.ts`.
+
+---
+
+## 3. Phase 7 — P1 Multiplayer Combat & Network Hardening
+
+### 3.1. P1 — Server-Authoritative Thunder Spear Projectile (`CoopHunterRoom.ts`, `Protocol.ts`, `GameEngine.ts`)
+- **Root Cause:** Previously, `CoopHunterRoom.handleAuthoritativeThunderSpear` immediately computed `explosionPos`, applied `baseDmg` / `splashDmg`, and broadcast `thunder_spear_exploded` in the same callstack as `attack_intent`, while clients displayed a projectile flying at `95 m/s`.
+- **Implementation:**
+  - Defined `ServerThunderSpearProjectile` in `src/server/CoopHunterRoom.ts` and `NetProjectileState` in `src/shared/Protocol.ts`.
+  - When `handleAuthoritativeThunderSpear` receives a valid launch intent (and the player is not held in a point-blank Titan grab), the server consumes 1 Thunder Spear, enforces cooldown, spawns a live `ServerThunderSpearProjectile` in `this.projectiles`, and broadcasts `combat_event` (`type: 'thunder_spear_fired'`) so all remote clients immediately render the rocket launch.
+  - Every authoritative 60Hz tick (`stepAuthoritativeSimulation`), `stepProjectiles(dt, nowMs)` advances all active projectiles using **continuous swept collision**:
+    1. **Swept World Raycast:** Casts a Rapier ray (`this.physics.castRay(segStart, dir, stepDist, false)`) against static buildings, city walls, watchtowers, and ground (`y <= 0.15`) to find `wallDist`.
+    2. **Swept Titan Hurtbox Segment-Sphere Intersection:** Evaluates segment `[segStart, segStart + dir * Math.min(stepDist, wallDist)]` against live and lag-compensated Titan hurtboxes (`hb.radius + 0.65`).
+    3. **Impact-Only Detonation:** Explosion, AoE splash (with Line-of-Sight checks from `explosionPos` to each hurtbox), stagger, limb break, teammate grab rescue, and Titan kill are executed **only** on the tick the projectile physically impacts (`detonateServerThunderSpear`). No `setTimeout()` is used.
+- **Technical Trade-offs:**
+  - Locked projectiles apply bounded forward tracking (`desiredDir.dot(proj.direction) >= 0.35`) toward the locked hurtbox so moving Titans at `20–45m` remain hittable during aerial ODM combat, while still running the full swept world raycast every tick so projectiles can never bypass or curve through walls/buildings.
+
+### 3.2. P1 — Target Lock & Aim Cone Validation (`Protocol.ts`, `CoopHunterRoom.ts`)
+- **Root Cause:** Previously, if a client sent `targetTitanId`, the server checked distance (`<= maxRange`) and Line-of-Sight, but did not verify whether the target lay inside a valid forward FOV / aim cone or whether `aimDir` matched the player's authoritative camera direction from `input_frame`.
+- **Implementation:**
+  - Implemented `validateTargetLockAim(input: AimValidationInput)` in `src/shared/Protocol.ts`:
+    1. Validates `aimOrigin` is within `10.0m` of `player.position` (`INVALID_AIM_ORIGIN` otherwise) and has unobstructed Line-of-Sight from `playerChest`.
+    2. Cross-checks `aimDir` against the player's latest validated `input_frame` camera forward (`player.lastCamForward`, requiring `dot >= 0.15` to allow rapid mouse flicks while rejecting 180° backwards spoofing with `AIM_DIR_MISMATCH`).
+    3. Rejects targets in the rear hemisphere behind the player's chest (`dotPlayerForward < 0` -> `BEHIND_PLAYER`).
+    4. Enforces a `50°` half-angle forward aim cone (`100°` total FOV cone with close-range angular hurtbox radius allowance -> `OUTSIDE_AIM_CONE` if exceeded).
+  - Enforced `validateTargetLockAim` in both `handleAuthoritativeThunderSpear` and `handleAuthoritativeAttack`, tracking rejections via `room.rejectedTargetLockCount` and `room.rejectedAttackCount`.
+
+### 3.3. P1 — Reconnection Per-Attempt Timeout & Session Lifecycle (`NetworkClient.ts`, `CoopHunterRoom.ts`, `GameEngine.ts`)
+- **Root Cause:** In `NetworkClient.reconnectWithBackoff`, `await this.client.joinById(...)` had no per-attempt timeout wrapper; a hung WebSocket handshake could stall indefinitely past `reconnectTimeoutMs`, and a late-resolving `joinById` after cancellation or timeout could leave an orphan room connection.
+- **Implementation:**
+  - Added `joinRoomWithTimeout(roomId, options, timeoutMs, expectedCancelToken)` in `src/network/NetworkClient.ts` enforcing `Math.min(this.reconnectAttemptTimeoutMs, remainingDeadlineMs)` on every attempt.
+  - If an attempt times out or is cancelled (`this.reconnectCancelToken !== expectedCancelToken`) and `joinById` resolves late, `joinRoomWithTimeout` immediately invokes `room.leave(true)` and increments `lateClosedRoomCount`, preventing orphan sockets and duplicate players.
+  - Deduplicated concurrent reconnect calls via `activeReconnectPromise` and added `isTerminalReconnectError` to abort retries immediately on `SESSION_EXPIRED` or `Room is full`.
+  - Guarded all room event listeners (`session_welcome`, `room_snapshot`, `combat_event`, `pong_rtt`, `room_error`, `onLeave`) in `bindRoom(room)` with `if (this.room !== room) return;` so stale socket callbacks never overwrite a newer room's state.
+  - On the server (`CoopHunterRoom.onAuth` & `onJoin`), `options.reconnectOnly` throws `SESSION_EXPIRED` if the token is expired/invalid, and valid session handoffs reset `lastReceivedSeq = 0` and `lastAttackSeq = 0` so reconnected clients never have inputs dropped due to sequence counter resets.
+
+---
+
+## 4. Verification & How to Run Tests
+- **Typecheck & Production Build:**
+  ```bash
+  npm run build
+  ```
+- **Unit, Integration & Security Regression Suite (`30/30` tests across `tests/gameplay.test.ts` and `tests/multiplayer.test.ts`):**
+  ```bash
+  npm test
+  ```
+
