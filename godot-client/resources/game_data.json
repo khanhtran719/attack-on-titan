@@ -1,0 +1,2320 @@
+{
+  "config": {
+    "physics": {
+      "fixedTimestep": 0.016666666666666666,
+      "maxSubSteps": 4,
+      "gravity": -22,
+      "hookedGravityScale": 0.72,
+      "terminalVelocity": 54,
+      "groundFriction": 11,
+      "airDrag": 0.016
+    },
+    "player": {
+      "capsuleHalfHeight": 0.55,
+      "capsuleRadius": 0.35,
+      "eyeHeight": 1.55,
+      "walkSpeed": 5.5,
+      "runSpeed": 9.5,
+      "sprintSpeed": 13.5,
+      "jumpVelocity": 10.5,
+      "airControlAccel": 18,
+      "dodgeImpulse": 22,
+      "dodgeDuration": 0.38,
+      "dodgeCooldown": 0.75,
+      "perfectDodgeWindow": 0.2,
+      "maxHealth": 100,
+      "maxGas": 100,
+      "maxBladeDurability": 100,
+      "maxSpareBlades": 6,
+      "maxThunderSpears": 4
+    },
+    "odm": {
+      "maxGrappleRange": 88,
+      "aimAssistConeAngleRad": 0.14,
+      "wireShootSpeed": 180,
+      "reelInSpeedBase": 19,
+      "reelInSpeedBoost": 33,
+      "minRopeLength": 2.2,
+      "ropeStiffness": 42,
+      "ropeDamping": 0.92,
+      "swingSteeringAccel": 26,
+      "tangentialBoostFactor": 1.18,
+      "gasBoostAccel": 38,
+      "gasConsumptionBoostPerSec": 13.5,
+      "gasConsumptionReelPerSec": 3.5,
+      "gasPassiveRegenGroundedPerSec": 2.5,
+      "maxAirSpeed": 50
+    },
+    "combat": {
+      "lightAttackDuration": 0.44,
+      "heavyAttackDuration": 0.62,
+      "attackActiveStartNorm": 0.18,
+      "attackActiveEndNorm": 0.76,
+      "attackCooldown": 0.18,
+      "bladeReach": 2.35,
+      "baseLightDamage": 190,
+      "baseHeavyDamage": 320,
+      "velocityReferenceSpeed": 16,
+      "maxVelocityMultiplier": 3,
+      "minVelocityMultiplier": 0.65,
+      "napeCriticalAngleCos": -0.15,
+      "napeRearBonusMultiplier": 1.55,
+      "dullBladeMultiplier": 0.35,
+      "bladeDurabilityLossPerHit": 14,
+      "bladeDurabilityLossHardHit": 22,
+      "hitStopDuration": 0.065,
+      "comboResetTime": 6.5,
+      "thunderSpearSpeed": 95,
+      "thunderSpearRange": 75,
+      "thunderSpearBaseDamage": 580,
+      "thunderSpearSplashDamage": 340,
+      "thunderSpearBlastRadius": 6.5,
+      "thunderSpearCooldown": 0.85,
+      "grabHoldDuration": 3.5,
+      "grabCrushDps": 10,
+      "grabEscapeStep": 0.38
+    },
+    "camera": {
+      "baseFov": 62,
+      "maxBoostFov": 86,
+      "fovLerpSpeed": 7.5,
+      "minPitch": -1.15,
+      "maxPitch": 1.25,
+      "followSmoothTime": 16,
+      "lookAheadVelocityFactor": 0.065,
+      "shoulderOffset": {
+        "x": 0.55,
+        "y": 1.65,
+        "z": 0
+      },
+      "wallClearanceRadius": 0.35
+    },
+    "world": {
+      "citySize": 300,
+      "wallHeight": 38,
+      "wallThickness": 10,
+      "buildingCountTarget": 68,
+      "minStreetWidth": 16,
+      "plazaRadius": 34,
+      "resupplyRange": 8.5
+    },
+    "titans": {
+      "normal": {
+        "name": "Normal Titan",
+        "minHeight": 6.5,
+        "maxHeight": 9,
+        "napeHp": 340,
+        "limbHp": 210,
+        "walkSpeed": 3.8,
+        "chaseSpeed": 7.4,
+        "turnSpeed": 2.4,
+        "detectRange": 75,
+        "fovCos": -0.2,
+        "attackRange": 6.2,
+        "attackDamage": 28,
+        "grabDamage": 42,
+        "injuredDuration": 12,
+        "stunnedDuration": 6,
+        "scoreValue": 1000
+      },
+      "abnormal": {
+        "name": "Abnormal Titan",
+        "minHeight": 7.5,
+        "maxHeight": 11,
+        "napeHp": 460,
+        "limbHp": 250,
+        "walkSpeed": 5.6,
+        "chaseSpeed": 13.8,
+        "turnSpeed": 4.2,
+        "detectRange": 95,
+        "fovCos": -0.4,
+        "attackRange": 7.4,
+        "attackDamage": 34,
+        "grabDamage": 48,
+        "injuredDuration": 10,
+        "stunnedDuration": 5.5,
+        "scoreValue": 1500
+      },
+      "large": {
+        "name": "Colossal Vanguard Titan",
+        "minHeight": 13,
+        "maxHeight": 15,
+        "napeHp": 780,
+        "limbHp": 400,
+        "walkSpeed": 3.2,
+        "chaseSpeed": 5.8,
+        "turnSpeed": 1.7,
+        "detectRange": 110,
+        "fovCos": -0.3,
+        "attackRange": 9.8,
+        "attackDamage": 46,
+        "grabDamage": 60,
+        "injuredDuration": 14,
+        "stunnedDuration": 6.5,
+        "scoreValue": 2500
+      }
+    }
+  },
+  "city": {
+    "halfSize": 150,
+    "walls": [
+      {
+        "pos": [
+          0,
+          19,
+          -150
+        ],
+        "size": [
+          310,
+          38,
+          10
+        ],
+        "halfExtents": [
+          155,
+          19,
+          5
+        ],
+        "label": "Outer Wall Maria"
+      },
+      {
+        "pos": [
+          0,
+          19,
+          150
+        ],
+        "size": [
+          310,
+          38,
+          10
+        ],
+        "halfExtents": [
+          155,
+          19,
+          5
+        ],
+        "label": "Outer Wall Maria"
+      },
+      {
+        "pos": [
+          -150,
+          19,
+          0
+        ],
+        "size": [
+          10,
+          38,
+          310
+        ],
+        "halfExtents": [
+          5,
+          19,
+          155
+        ],
+        "label": "Outer Wall Maria"
+      },
+      {
+        "pos": [
+          150,
+          19,
+          0
+        ],
+        "size": [
+          10,
+          38,
+          310
+        ],
+        "halfExtents": [
+          5,
+          19,
+          155
+        ],
+        "label": "Outer Wall Maria"
+      }
+    ],
+    "towers": [
+      {
+        "id": "tower_central_bell",
+        "center": [
+          0,
+          17,
+          0
+        ],
+        "width": 7.5,
+        "height": 34,
+        "spireHeight": 11,
+        "halfExtents": [
+          3.75,
+          17,
+          3.75
+        ],
+        "label": "Central Bell Tower"
+      },
+      {
+        "id": "tower_plaza_1",
+        "center": [
+          -20,
+          12,
+          -20
+        ],
+        "width": 5.2,
+        "height": 24,
+        "spireHeight": 7,
+        "halfExtents": [
+          2.6,
+          12,
+          2.6
+        ],
+        "label": "Plaza Watchtower #1"
+      },
+      {
+        "id": "tower_plaza_2",
+        "center": [
+          20,
+          12,
+          -20
+        ],
+        "width": 5.2,
+        "height": 24,
+        "spireHeight": 7,
+        "halfExtents": [
+          2.6,
+          12,
+          2.6
+        ],
+        "label": "Plaza Watchtower #2"
+      },
+      {
+        "id": "tower_plaza_3",
+        "center": [
+          -20,
+          12,
+          20
+        ],
+        "width": 5.2,
+        "height": 24,
+        "spireHeight": 7,
+        "halfExtents": [
+          2.6,
+          12,
+          2.6
+        ],
+        "label": "Plaza Watchtower #3"
+      },
+      {
+        "id": "tower_plaza_4",
+        "center": [
+          20,
+          12,
+          20
+        ],
+        "width": 5.2,
+        "height": 24,
+        "spireHeight": 7,
+        "halfExtents": [
+          2.6,
+          12,
+          2.6
+        ],
+        "label": "Plaza Watchtower #4"
+      }
+    ],
+    "buildings": [
+      {
+        "index": 1,
+        "bx": -112,
+        "bz": -82,
+        "width": 13,
+        "depth": 12,
+        "bodyHeight": 15,
+        "roofHeight": 6.5,
+        "totalColliderH": 18.25,
+        "colliderCenter": [
+          -112,
+          9.125,
+          -82
+        ],
+        "halfExtents": [
+          6.5,
+          9.125,
+          6
+        ],
+        "label": "District Building #1"
+      },
+      {
+        "index": 2,
+        "bx": -112,
+        "bz": -52,
+        "width": 12,
+        "depth": 17,
+        "bodyHeight": 29,
+        "roofHeight": 4.5,
+        "totalColliderH": 31.25,
+        "colliderCenter": [
+          -112,
+          15.625,
+          -52
+        ],
+        "halfExtents": [
+          6,
+          15.625,
+          8.5
+        ],
+        "label": "District Building #2"
+      },
+      {
+        "index": 3,
+        "bx": -112,
+        "bz": -26,
+        "width": 16,
+        "depth": 16,
+        "bodyHeight": 19,
+        "roofHeight": 6.5,
+        "totalColliderH": 22.25,
+        "colliderCenter": [
+          -112,
+          11.125,
+          -26
+        ],
+        "halfExtents": [
+          8,
+          11.125,
+          8
+        ],
+        "label": "District Building #3"
+      },
+      {
+        "index": 4,
+        "bx": -112,
+        "bz": 26,
+        "width": 12,
+        "depth": 13,
+        "bodyHeight": 15,
+        "roofHeight": 6.5,
+        "totalColliderH": 18.25,
+        "colliderCenter": [
+          -112,
+          9.125,
+          26
+        ],
+        "halfExtents": [
+          6,
+          9.125,
+          6.5
+        ],
+        "label": "District Building #4"
+      },
+      {
+        "index": 5,
+        "bx": -112,
+        "bz": 52,
+        "width": 16,
+        "depth": 13,
+        "bodyHeight": 23,
+        "roofHeight": 5.5,
+        "totalColliderH": 25.75,
+        "colliderCenter": [
+          -112,
+          12.875,
+          52
+        ],
+        "halfExtents": [
+          8,
+          12.875,
+          6.5
+        ],
+        "label": "District Building #5"
+      },
+      {
+        "index": 6,
+        "bx": -112,
+        "bz": 82,
+        "width": 13,
+        "depth": 16,
+        "bodyHeight": 23,
+        "roofHeight": 5.5,
+        "totalColliderH": 25.75,
+        "colliderCenter": [
+          -112,
+          12.875,
+          82
+        ],
+        "halfExtents": [
+          6.5,
+          12.875,
+          8
+        ],
+        "label": "District Building #6"
+      },
+      {
+        "index": 7,
+        "bx": -82,
+        "bz": -112,
+        "width": 18,
+        "depth": 15,
+        "bodyHeight": 21,
+        "roofHeight": 6.5,
+        "totalColliderH": 24.25,
+        "colliderCenter": [
+          -82,
+          12.125,
+          -112
+        ],
+        "halfExtents": [
+          9,
+          12.125,
+          7.5
+        ],
+        "label": "District Building #7"
+      },
+      {
+        "index": 8,
+        "bx": -82,
+        "bz": -82,
+        "width": 17,
+        "depth": 13,
+        "bodyHeight": 18,
+        "roofHeight": 4.5,
+        "totalColliderH": 20.25,
+        "colliderCenter": [
+          -82,
+          10.125,
+          -82
+        ],
+        "halfExtents": [
+          8.5,
+          10.125,
+          6.5
+        ],
+        "label": "District Building #8"
+      },
+      {
+        "index": 9,
+        "bx": -82,
+        "bz": -52,
+        "width": 16,
+        "depth": 18,
+        "bodyHeight": 14,
+        "roofHeight": 5.5,
+        "totalColliderH": 16.75,
+        "colliderCenter": [
+          -82,
+          8.375,
+          -52
+        ],
+        "halfExtents": [
+          8,
+          8.375,
+          9
+        ],
+        "label": "District Building #9"
+      },
+      {
+        "index": 10,
+        "bx": -82,
+        "bz": -26,
+        "width": 13,
+        "depth": 18,
+        "bodyHeight": 22,
+        "roofHeight": 4.5,
+        "totalColliderH": 24.25,
+        "colliderCenter": [
+          -82,
+          12.125,
+          -26
+        ],
+        "halfExtents": [
+          6.5,
+          12.125,
+          9
+        ],
+        "label": "District Building #10"
+      },
+      {
+        "index": 11,
+        "bx": -82,
+        "bz": 26,
+        "width": 16,
+        "depth": 15,
+        "bodyHeight": 18,
+        "roofHeight": 4.5,
+        "totalColliderH": 20.25,
+        "colliderCenter": [
+          -82,
+          10.125,
+          26
+        ],
+        "halfExtents": [
+          8,
+          10.125,
+          7.5
+        ],
+        "label": "District Building #11"
+      },
+      {
+        "index": 12,
+        "bx": -82,
+        "bz": 52,
+        "width": 13,
+        "depth": 14,
+        "bodyHeight": 26,
+        "roofHeight": 6.5,
+        "totalColliderH": 29.25,
+        "colliderCenter": [
+          -82,
+          14.625,
+          52
+        ],
+        "halfExtents": [
+          6.5,
+          14.625,
+          7
+        ],
+        "label": "District Building #12"
+      },
+      {
+        "index": 13,
+        "bx": -82,
+        "bz": 82,
+        "width": 17,
+        "depth": 17,
+        "bodyHeight": 26,
+        "roofHeight": 6.5,
+        "totalColliderH": 29.25,
+        "colliderCenter": [
+          -82,
+          14.625,
+          82
+        ],
+        "halfExtents": [
+          8.5,
+          14.625,
+          8.5
+        ],
+        "label": "District Building #13"
+      },
+      {
+        "index": 14,
+        "bx": -82,
+        "bz": 112,
+        "width": 16,
+        "depth": 16,
+        "bodyHeight": 23,
+        "roofHeight": 4.5,
+        "totalColliderH": 25.25,
+        "colliderCenter": [
+          -82,
+          12.625,
+          112
+        ],
+        "halfExtents": [
+          8,
+          12.625,
+          8
+        ],
+        "label": "District Building #14"
+      },
+      {
+        "index": 15,
+        "bx": -52,
+        "bz": -112,
+        "width": 13,
+        "depth": 12,
+        "bodyHeight": 25,
+        "roofHeight": 5.5,
+        "totalColliderH": 27.75,
+        "colliderCenter": [
+          -52,
+          13.875,
+          -112
+        ],
+        "halfExtents": [
+          6.5,
+          13.875,
+          6
+        ],
+        "label": "District Building #15"
+      },
+      {
+        "index": 16,
+        "bx": -52,
+        "bz": -82,
+        "width": 12,
+        "depth": 17,
+        "bodyHeight": 21,
+        "roofHeight": 6.5,
+        "totalColliderH": 24.25,
+        "colliderCenter": [
+          -52,
+          12.125,
+          -82
+        ],
+        "halfExtents": [
+          6,
+          12.125,
+          8.5
+        ],
+        "label": "District Building #16"
+      },
+      {
+        "index": 17,
+        "bx": -52,
+        "bz": -52,
+        "width": 18,
+        "depth": 15,
+        "bodyHeight": 17,
+        "roofHeight": 4.5,
+        "totalColliderH": 19.25,
+        "colliderCenter": [
+          -52,
+          9.625,
+          -52
+        ],
+        "halfExtents": [
+          9,
+          9.625,
+          7.5
+        ],
+        "label": "District Building #17"
+      },
+      {
+        "index": 18,
+        "bx": -52,
+        "bz": -26,
+        "width": 15,
+        "depth": 15,
+        "bodyHeight": 25,
+        "roofHeight": 6.5,
+        "totalColliderH": 28.25,
+        "colliderCenter": [
+          -52,
+          14.125,
+          -26
+        ],
+        "halfExtents": [
+          7.5,
+          14.125,
+          7.5
+        ],
+        "label": "District Building #18"
+      },
+      {
+        "index": 19,
+        "bx": -52,
+        "bz": 26,
+        "width": 18,
+        "depth": 18,
+        "bodyHeight": 22,
+        "roofHeight": 6.5,
+        "totalColliderH": 25.25,
+        "colliderCenter": [
+          -52,
+          12.625,
+          26
+        ],
+        "halfExtents": [
+          9,
+          12.625,
+          9
+        ],
+        "label": "District Building #19"
+      },
+      {
+        "index": 20,
+        "bx": -52,
+        "bz": 52,
+        "width": 13,
+        "depth": 16,
+        "bodyHeight": 15,
+        "roofHeight": 4.5,
+        "totalColliderH": 17.25,
+        "colliderCenter": [
+          -52,
+          8.625,
+          52
+        ],
+        "halfExtents": [
+          6.5,
+          8.625,
+          8
+        ],
+        "label": "District Building #20"
+      },
+      {
+        "index": 21,
+        "bx": -52,
+        "bz": 82,
+        "width": 12,
+        "depth": 14,
+        "bodyHeight": 30,
+        "roofHeight": 5.5,
+        "totalColliderH": 32.75,
+        "colliderCenter": [
+          -52,
+          16.375,
+          82
+        ],
+        "halfExtents": [
+          6,
+          16.375,
+          7
+        ],
+        "label": "District Building #21"
+      },
+      {
+        "index": 22,
+        "bx": -52,
+        "bz": 112,
+        "width": 18,
+        "depth": 12,
+        "bodyHeight": 26,
+        "roofHeight": 6.5,
+        "totalColliderH": 29.25,
+        "colliderCenter": [
+          -52,
+          14.625,
+          112
+        ],
+        "halfExtents": [
+          9,
+          14.625,
+          6
+        ],
+        "label": "District Building #22"
+      },
+      {
+        "index": 23,
+        "bx": -26,
+        "bz": -112,
+        "width": 14,
+        "depth": 18,
+        "bodyHeight": 24,
+        "roofHeight": 6.5,
+        "totalColliderH": 27.25,
+        "colliderCenter": [
+          -26,
+          13.625,
+          -112
+        ],
+        "halfExtents": [
+          7,
+          13.625,
+          9
+        ],
+        "label": "District Building #23"
+      },
+      {
+        "index": 24,
+        "bx": -26,
+        "bz": -82,
+        "width": 13,
+        "depth": 16,
+        "bodyHeight": 20,
+        "roofHeight": 4.5,
+        "totalColliderH": 22.25,
+        "colliderCenter": [
+          -26,
+          11.125,
+          -82
+        ],
+        "halfExtents": [
+          6.5,
+          11.125,
+          8
+        ],
+        "label": "District Building #24"
+      },
+      {
+        "index": 25,
+        "bx": -26,
+        "bz": -52,
+        "width": 12,
+        "depth": 14,
+        "bodyHeight": 16,
+        "roofHeight": 5.5,
+        "totalColliderH": 18.75,
+        "colliderCenter": [
+          -26,
+          9.375,
+          -52
+        ],
+        "halfExtents": [
+          6,
+          9.375,
+          7
+        ],
+        "label": "District Building #25"
+      },
+      {
+        "index": 26,
+        "bx": -26,
+        "bz": 52,
+        "width": 18,
+        "depth": 18,
+        "bodyHeight": 31,
+        "roofHeight": 6.5,
+        "totalColliderH": 34.25,
+        "colliderCenter": [
+          -26,
+          17.125,
+          52
+        ],
+        "halfExtents": [
+          9,
+          17.125,
+          9
+        ],
+        "label": "District Building #26"
+      },
+      {
+        "index": 27,
+        "bx": -26,
+        "bz": 82,
+        "width": 17,
+        "depth": 16,
+        "bodyHeight": 27,
+        "roofHeight": 4.5,
+        "totalColliderH": 29.25,
+        "colliderCenter": [
+          -26,
+          14.625,
+          82
+        ],
+        "halfExtents": [
+          8.5,
+          14.625,
+          8
+        ],
+        "label": "District Building #27"
+      },
+      {
+        "index": 28,
+        "bx": -26,
+        "bz": 112,
+        "width": 16,
+        "depth": 14,
+        "bodyHeight": 24,
+        "roofHeight": 5.5,
+        "totalColliderH": 26.75,
+        "colliderCenter": [
+          -26,
+          13.375,
+          112
+        ],
+        "halfExtents": [
+          8,
+          13.375,
+          7
+        ],
+        "label": "District Building #28"
+      },
+      {
+        "index": 29,
+        "bx": 26,
+        "bz": -112,
+        "width": 15,
+        "depth": 14,
+        "bodyHeight": 15,
+        "roofHeight": 4.5,
+        "totalColliderH": 17.25,
+        "colliderCenter": [
+          26,
+          8.625,
+          -112
+        ],
+        "halfExtents": [
+          7.5,
+          8.625,
+          7
+        ],
+        "label": "District Building #29"
+      },
+      {
+        "index": 30,
+        "bx": 26,
+        "bz": -82,
+        "width": 14,
+        "depth": 12,
+        "bodyHeight": 30,
+        "roofHeight": 5.5,
+        "totalColliderH": 32.75,
+        "colliderCenter": [
+          26,
+          16.375,
+          -82
+        ],
+        "halfExtents": [
+          7,
+          16.375,
+          6
+        ],
+        "label": "District Building #30"
+      },
+      {
+        "index": 31,
+        "bx": 26,
+        "bz": -52,
+        "width": 13,
+        "depth": 17,
+        "bodyHeight": 26,
+        "roofHeight": 6.5,
+        "totalColliderH": 29.25,
+        "colliderCenter": [
+          26,
+          14.625,
+          -52
+        ],
+        "halfExtents": [
+          6.5,
+          14.625,
+          8.5
+        ],
+        "label": "District Building #31"
+      },
+      {
+        "index": 32,
+        "bx": 26,
+        "bz": 52,
+        "width": 12,
+        "depth": 13,
+        "bodyHeight": 23,
+        "roofHeight": 4.5,
+        "totalColliderH": 25.25,
+        "colliderCenter": [
+          26,
+          12.625,
+          52
+        ],
+        "halfExtents": [
+          6,
+          12.625,
+          6.5
+        ],
+        "label": "District Building #32"
+      },
+      {
+        "index": 33,
+        "bx": 26,
+        "bz": 82,
+        "width": 18,
+        "depth": 18,
+        "bodyHeight": 19,
+        "roofHeight": 5.5,
+        "totalColliderH": 21.75,
+        "colliderCenter": [
+          26,
+          10.875,
+          82
+        ],
+        "halfExtents": [
+          9,
+          10.875,
+          9
+        ],
+        "label": "District Building #33"
+      },
+      {
+        "index": 34,
+        "bx": 26,
+        "bz": 112,
+        "width": 17,
+        "depth": 17,
+        "bodyHeight": 15,
+        "roofHeight": 6.5,
+        "totalColliderH": 18.25,
+        "colliderCenter": [
+          26,
+          9.125,
+          112
+        ],
+        "halfExtents": [
+          8.5,
+          9.125,
+          8.5
+        ],
+        "label": "District Building #34"
+      },
+      {
+        "index": 35,
+        "bx": 52,
+        "bz": -112,
+        "width": 13,
+        "depth": 15,
+        "bodyHeight": 31,
+        "roofHeight": 6.5,
+        "totalColliderH": 34.25,
+        "colliderCenter": [
+          52,
+          17.125,
+          -112
+        ],
+        "halfExtents": [
+          6.5,
+          17.125,
+          7.5
+        ],
+        "label": "District Building #35"
+      },
+      {
+        "index": 36,
+        "bx": 52,
+        "bz": -82,
+        "width": 12,
+        "depth": 13,
+        "bodyHeight": 27,
+        "roofHeight": 4.5,
+        "totalColliderH": 29.25,
+        "colliderCenter": [
+          52,
+          14.625,
+          -82
+        ],
+        "halfExtents": [
+          6,
+          14.625,
+          6.5
+        ],
+        "label": "District Building #36"
+      },
+      {
+        "index": 37,
+        "bx": 52,
+        "bz": -52,
+        "width": 18,
+        "depth": 18,
+        "bodyHeight": 23,
+        "roofHeight": 5.5,
+        "totalColliderH": 25.75,
+        "colliderCenter": [
+          52,
+          12.875,
+          -52
+        ],
+        "halfExtents": [
+          9,
+          12.875,
+          9
+        ],
+        "label": "District Building #37"
+      },
+      {
+        "index": 38,
+        "bx": 52,
+        "bz": -26,
+        "width": 13,
+        "depth": 16,
+        "bodyHeight": 17,
+        "roofHeight": 6.5,
+        "totalColliderH": 20.25,
+        "colliderCenter": [
+          52,
+          10.125,
+          -26
+        ],
+        "halfExtents": [
+          6.5,
+          10.125,
+          8
+        ],
+        "label": "District Building #38"
+      },
+      {
+        "index": 39,
+        "bx": 52,
+        "bz": 26,
+        "width": 16,
+        "depth": 13,
+        "bodyHeight": 14,
+        "roofHeight": 6.5,
+        "totalColliderH": 17.25,
+        "colliderCenter": [
+          52,
+          8.625,
+          26
+        ],
+        "halfExtents": [
+          8,
+          8.625,
+          6.5
+        ],
+        "label": "District Building #39"
+      },
+      {
+        "index": 40,
+        "bx": 52,
+        "bz": 52,
+        "width": 13,
+        "depth": 13,
+        "bodyHeight": 22,
+        "roofHeight": 5.5,
+        "totalColliderH": 24.75,
+        "colliderCenter": [
+          52,
+          12.375,
+          52
+        ],
+        "halfExtents": [
+          6.5,
+          12.375,
+          6.5
+        ],
+        "label": "District Building #40"
+      },
+      {
+        "index": 41,
+        "bx": 52,
+        "bz": 82,
+        "width": 12,
+        "depth": 18,
+        "bodyHeight": 18,
+        "roofHeight": 6.5,
+        "totalColliderH": 21.25,
+        "colliderCenter": [
+          52,
+          10.625,
+          82
+        ],
+        "halfExtents": [
+          6,
+          10.625,
+          9
+        ],
+        "label": "District Building #41"
+      },
+      {
+        "index": 42,
+        "bx": 52,
+        "bz": 112,
+        "width": 18,
+        "depth": 16,
+        "bodyHeight": 14,
+        "roofHeight": 4.5,
+        "totalColliderH": 16.25,
+        "colliderCenter": [
+          52,
+          8.125,
+          112
+        ],
+        "halfExtents": [
+          9,
+          8.125,
+          8
+        ],
+        "label": "District Building #42"
+      },
+      {
+        "index": 43,
+        "bx": 82,
+        "bz": -112,
+        "width": 15,
+        "depth": 12,
+        "bodyHeight": 16,
+        "roofHeight": 5.5,
+        "totalColliderH": 18.75,
+        "colliderCenter": [
+          82,
+          9.375,
+          -112
+        ],
+        "halfExtents": [
+          7.5,
+          9.375,
+          6
+        ],
+        "label": "District Building #43"
+      },
+      {
+        "index": 44,
+        "bx": 82,
+        "bz": -82,
+        "width": 14,
+        "depth": 17,
+        "bodyHeight": 31,
+        "roofHeight": 6.5,
+        "totalColliderH": 34.25,
+        "colliderCenter": [
+          82,
+          17.125,
+          -82
+        ],
+        "halfExtents": [
+          7,
+          17.125,
+          8.5
+        ],
+        "label": "District Building #44"
+      },
+      {
+        "index": 45,
+        "bx": 82,
+        "bz": -52,
+        "width": 18,
+        "depth": 13,
+        "bodyHeight": 31,
+        "roofHeight": 6.5,
+        "totalColliderH": 34.25,
+        "colliderCenter": [
+          82,
+          17.125,
+          -52
+        ],
+        "halfExtents": [
+          9,
+          17.125,
+          6.5
+        ],
+        "label": "District Building #45"
+      },
+      {
+        "index": 46,
+        "bx": 82,
+        "bz": -26,
+        "width": 15,
+        "depth": 13,
+        "bodyHeight": 21,
+        "roofHeight": 5.5,
+        "totalColliderH": 23.75,
+        "colliderCenter": [
+          82,
+          11.875,
+          -26
+        ],
+        "halfExtents": [
+          7.5,
+          11.875,
+          6.5
+        ],
+        "label": "District Building #46"
+      },
+      {
+        "index": 47,
+        "bx": 82,
+        "bz": 26,
+        "width": 18,
+        "depth": 17,
+        "bodyHeight": 17,
+        "roofHeight": 5.5,
+        "totalColliderH": 19.75,
+        "colliderCenter": [
+          82,
+          9.875,
+          26
+        ],
+        "halfExtents": [
+          9,
+          9.875,
+          8.5
+        ],
+        "label": "District Building #47"
+      },
+      {
+        "index": 48,
+        "bx": 82,
+        "bz": 52,
+        "width": 15,
+        "depth": 16,
+        "bodyHeight": 25,
+        "roofHeight": 4.5,
+        "totalColliderH": 27.25,
+        "colliderCenter": [
+          82,
+          13.625,
+          52
+        ],
+        "halfExtents": [
+          7.5,
+          13.625,
+          8
+        ],
+        "label": "District Building #48"
+      },
+      {
+        "index": 49,
+        "bx": 82,
+        "bz": 82,
+        "width": 14,
+        "depth": 14,
+        "bodyHeight": 21,
+        "roofHeight": 5.5,
+        "totalColliderH": 23.75,
+        "colliderCenter": [
+          82,
+          11.875,
+          82
+        ],
+        "halfExtents": [
+          7,
+          11.875,
+          7
+        ],
+        "label": "District Building #49"
+      },
+      {
+        "index": 50,
+        "bx": 82,
+        "bz": 112,
+        "width": 13,
+        "depth": 13,
+        "bodyHeight": 18,
+        "roofHeight": 6.5,
+        "totalColliderH": 21.25,
+        "colliderCenter": [
+          82,
+          10.625,
+          112
+        ],
+        "halfExtents": [
+          6.5,
+          10.625,
+          6.5
+        ],
+        "label": "District Building #50"
+      },
+      {
+        "index": 51,
+        "bx": 112,
+        "bz": -82,
+        "width": 16,
+        "depth": 16,
+        "bodyHeight": 19,
+        "roofHeight": 6.5,
+        "totalColliderH": 22.25,
+        "colliderCenter": [
+          112,
+          11.125,
+          -82
+        ],
+        "halfExtents": [
+          8,
+          11.125,
+          8
+        ],
+        "label": "District Building #51"
+      },
+      {
+        "index": 52,
+        "bx": 112,
+        "bz": -52,
+        "width": 15,
+        "depth": 15,
+        "bodyHeight": 16,
+        "roofHeight": 4.5,
+        "totalColliderH": 18.25,
+        "colliderCenter": [
+          112,
+          9.125,
+          -52
+        ],
+        "halfExtents": [
+          7.5,
+          9.125,
+          7.5
+        ],
+        "label": "District Building #52"
+      },
+      {
+        "index": 53,
+        "bx": 112,
+        "bz": -26,
+        "width": 12,
+        "depth": 14,
+        "bodyHeight": 23,
+        "roofHeight": 6.5,
+        "totalColliderH": 26.25,
+        "colliderCenter": [
+          112,
+          13.125,
+          -26
+        ],
+        "halfExtents": [
+          6,
+          13.125,
+          7
+        ],
+        "label": "District Building #53"
+      },
+      {
+        "index": 54,
+        "bx": 112,
+        "bz": 26,
+        "width": 15,
+        "depth": 18,
+        "bodyHeight": 20,
+        "roofHeight": 6.5,
+        "totalColliderH": 23.25,
+        "colliderCenter": [
+          112,
+          11.625,
+          26
+        ],
+        "halfExtents": [
+          7.5,
+          11.625,
+          9
+        ],
+        "label": "District Building #54"
+      },
+      {
+        "index": 55,
+        "bx": 112,
+        "bz": 52,
+        "width": 12,
+        "depth": 18,
+        "bodyHeight": 28,
+        "roofHeight": 5.5,
+        "totalColliderH": 30.75,
+        "colliderCenter": [
+          112,
+          15.375,
+          52
+        ],
+        "halfExtents": [
+          6,
+          15.375,
+          9
+        ],
+        "label": "District Building #55"
+      },
+      {
+        "index": 56,
+        "bx": 112,
+        "bz": 82,
+        "width": 18,
+        "depth": 16,
+        "bodyHeight": 24,
+        "roofHeight": 6.5,
+        "totalColliderH": 27.25,
+        "colliderCenter": [
+          112,
+          13.625,
+          82
+        ],
+        "halfExtents": [
+          9,
+          13.625,
+          8
+        ],
+        "label": "District Building #56"
+      }
+    ],
+    "trees": [
+      {
+        "pos": [
+          -125,
+          0,
+          -12
+        ],
+        "colliderCenter": [
+          -125,
+          5.5,
+          -12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -125,
+          0,
+          12
+        ],
+        "colliderCenter": [
+          -125,
+          5.5,
+          12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -12,
+          0,
+          -125
+        ],
+        "colliderCenter": [
+          -12,
+          5.5,
+          -125
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          12,
+          0,
+          -125
+        ],
+        "colliderCenter": [
+          12,
+          5.5,
+          -125
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -100,
+          0,
+          -12
+        ],
+        "colliderCenter": [
+          -100,
+          5.5,
+          -12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -100,
+          0,
+          12
+        ],
+        "colliderCenter": [
+          -100,
+          5.5,
+          12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -12,
+          0,
+          -100
+        ],
+        "colliderCenter": [
+          -12,
+          5.5,
+          -100
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          12,
+          0,
+          -100
+        ],
+        "colliderCenter": [
+          12,
+          5.5,
+          -100
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -75,
+          0,
+          -12
+        ],
+        "colliderCenter": [
+          -75,
+          5.5,
+          -12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -75,
+          0,
+          12
+        ],
+        "colliderCenter": [
+          -75,
+          5.5,
+          12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -12,
+          0,
+          -75
+        ],
+        "colliderCenter": [
+          -12,
+          5.5,
+          -75
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          12,
+          0,
+          -75
+        ],
+        "colliderCenter": [
+          12,
+          5.5,
+          -75
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -50,
+          0,
+          -12
+        ],
+        "colliderCenter": [
+          -50,
+          5.5,
+          -12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -50,
+          0,
+          12
+        ],
+        "colliderCenter": [
+          -50,
+          5.5,
+          12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -12,
+          0,
+          -50
+        ],
+        "colliderCenter": [
+          -12,
+          5.5,
+          -50
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          12,
+          0,
+          -50
+        ],
+        "colliderCenter": [
+          12,
+          5.5,
+          -50
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -25,
+          0,
+          -12
+        ],
+        "colliderCenter": [
+          -25,
+          5.5,
+          -12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -25,
+          0,
+          12
+        ],
+        "colliderCenter": [
+          -25,
+          5.5,
+          12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -12,
+          0,
+          -25
+        ],
+        "colliderCenter": [
+          -12,
+          5.5,
+          -25
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          12,
+          0,
+          -25
+        ],
+        "colliderCenter": [
+          12,
+          5.5,
+          -25
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          25,
+          0,
+          -12
+        ],
+        "colliderCenter": [
+          25,
+          5.5,
+          -12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          25,
+          0,
+          12
+        ],
+        "colliderCenter": [
+          25,
+          5.5,
+          12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -12,
+          0,
+          25
+        ],
+        "colliderCenter": [
+          -12,
+          5.5,
+          25
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          12,
+          0,
+          25
+        ],
+        "colliderCenter": [
+          12,
+          5.5,
+          25
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          50,
+          0,
+          -12
+        ],
+        "colliderCenter": [
+          50,
+          5.5,
+          -12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          50,
+          0,
+          12
+        ],
+        "colliderCenter": [
+          50,
+          5.5,
+          12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -12,
+          0,
+          50
+        ],
+        "colliderCenter": [
+          -12,
+          5.5,
+          50
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          12,
+          0,
+          50
+        ],
+        "colliderCenter": [
+          12,
+          5.5,
+          50
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          75,
+          0,
+          -12
+        ],
+        "colliderCenter": [
+          75,
+          5.5,
+          -12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          75,
+          0,
+          12
+        ],
+        "colliderCenter": [
+          75,
+          5.5,
+          12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -12,
+          0,
+          75
+        ],
+        "colliderCenter": [
+          -12,
+          5.5,
+          75
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          12,
+          0,
+          75
+        ],
+        "colliderCenter": [
+          12,
+          5.5,
+          75
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          100,
+          0,
+          -12
+        ],
+        "colliderCenter": [
+          100,
+          5.5,
+          -12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          100,
+          0,
+          12
+        ],
+        "colliderCenter": [
+          100,
+          5.5,
+          12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -12,
+          0,
+          100
+        ],
+        "colliderCenter": [
+          -12,
+          5.5,
+          100
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          12,
+          0,
+          100
+        ],
+        "colliderCenter": [
+          12,
+          5.5,
+          100
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          125,
+          0,
+          -12
+        ],
+        "colliderCenter": [
+          125,
+          5.5,
+          -12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          125,
+          0,
+          12
+        ],
+        "colliderCenter": [
+          125,
+          5.5,
+          12
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          -12,
+          0,
+          125
+        ],
+        "colliderCenter": [
+          -12,
+          5.5,
+          125
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      },
+      {
+        "pos": [
+          12,
+          0,
+          125
+        ],
+        "colliderCenter": [
+          12,
+          5.5,
+          125
+        ],
+        "halfHeight": 5.5,
+        "radius": 0.8,
+        "label": "City Tree"
+      }
+    ],
+    "supplyStations": [
+      [
+        16,
+        0,
+        16
+      ],
+      [
+        -65,
+        0,
+        0
+      ],
+      [
+        65,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        -65
+      ]
+    ],
+    "titanSpawnPoints": [
+      [
+        -112,
+        0,
+        -112
+      ],
+      [
+        -112,
+        0,
+        112
+      ],
+      [
+        112,
+        0,
+        -112
+      ],
+      [
+        112,
+        0,
+        112
+      ],
+      [
+        0,
+        0,
+        -115
+      ],
+      [
+        0,
+        0,
+        115
+      ],
+      [
+        -115,
+        0,
+        0
+      ],
+      [
+        115,
+        0,
+        0
+      ],
+      [
+        -68,
+        0,
+        -68
+      ],
+      [
+        68,
+        0,
+        -68
+      ],
+      [
+        -68,
+        0,
+        68
+      ],
+      [
+        68,
+        0,
+        68
+      ]
+    ],
+    "patrolWaypoints": [
+      [
+        -98,
+        0,
+        -26
+      ],
+      [
+        -99.5,
+        0,
+        82
+      ],
+      [
+        -68,
+        0,
+        -52
+      ],
+      [
+        -69.5,
+        0,
+        52
+      ],
+      [
+        -39.5,
+        0,
+        -112
+      ],
+      [
+        -38.5,
+        0,
+        -26
+      ],
+      [
+        -40,
+        0,
+        82
+      ],
+      [
+        -13.5,
+        0,
+        -82
+      ],
+      [
+        -26,
+        0,
+        -26
+      ],
+      [
+        -26,
+        0,
+        26
+      ],
+      [
+        -11.5,
+        0,
+        82
+      ],
+      [
+        39,
+        0,
+        -82
+      ],
+      [
+        26,
+        0,
+        -26
+      ],
+      [
+        26,
+        0,
+        26
+      ],
+      [
+        41,
+        0,
+        82
+      ],
+      [
+        64,
+        0,
+        -82
+      ],
+      [
+        66,
+        0,
+        26
+      ],
+      [
+        67,
+        0,
+        112
+      ],
+      [
+        97,
+        0,
+        -52
+      ],
+      [
+        95.5,
+        0,
+        52
+      ],
+      [
+        126,
+        0,
+        -82
+      ],
+      [
+        125.5,
+        0,
+        26
+      ]
+    ],
+    "playerSpawnPoints": [
+      [
+        -3.5,
+        0.2,
+        24
+      ],
+      [
+        3.5,
+        0.2,
+        24
+      ],
+      [
+        -7,
+        0.2,
+        27
+      ],
+      [
+        7,
+        0.2,
+        27
+      ]
+    ]
+  }
+}
