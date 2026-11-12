@@ -69,7 +69,7 @@ function prepareClips(sourceClips: Iterable<AnimationClip>): AnimationClip[] {
   });
 }
 
-const player = HumanoidRigBuilder.buildPlayerRig();
+const player = HumanoidRigBuilder.buildPlayerRig(true);
 batchBodyMaterials(player.skinnedMesh);
 for (const [name, node] of Object.entries({
   LeftWinch: player.leftWinchNode,
@@ -88,7 +88,7 @@ for (const [name, node] of Object.entries({
 const assets = [{ name: 'vanguard', root: player.rootGroup, animations: player.animations.values() }];
 const variants: TitanVariant[] = ['normal', 'abnormal', 'large'];
 for (const variant of variants) {
-  const titan = TitanRigBuilder.buildTitanRig(variant, 2);
+  const titan = TitanRigBuilder.buildTitanRig(variant, 2, variant === 'normal');
   titan.rootGroup.name = `Titan_${variant}`;
   titan.scaleGroup.name = 'TitanModel';
   titan.skinnedMesh.name = 'TitanMesh';

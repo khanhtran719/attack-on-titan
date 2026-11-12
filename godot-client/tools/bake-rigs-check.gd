@@ -81,6 +81,9 @@ func _check_asset(
 			var format := (mesh.mesh as ArrayMesh).surface_get_format(surface)
 			var required := Mesh.ARRAY_FORMAT_BONES | Mesh.ARRAY_FORMAT_WEIGHTS | Mesh.ARRAY_FORMAT_COLOR
 			_check((format & required) == required, "%s surface %d retains skin and color" % [asset, surface])
+			var material := mesh.mesh.surface_get_material(surface) as StandardMaterial3D
+			_check(material != null and material.vertex_color_use_as_albedo,
+				"%s surface %d renders its authored palette" % [asset, surface])
 
 	var player := rig.find_child("AnimationPlayer", true, false) as AnimationPlayer
 	if _check(player != null, "%s has an AnimationPlayer" % asset):

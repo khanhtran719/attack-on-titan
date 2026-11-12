@@ -134,7 +134,7 @@ func _verify_camera_and_anchors(player: CharacterBody3D) -> void:
 	root.add_child(marker)
 	player.locked_target = marker
 	await _ticks(8)
-	_check(not player.grapple_preview.has("target"), "solid geometry hides the locked Titan anchor")
+	_check(not player.grapple_previews[0].has("target") and not player.grapple_previews[1].has("target"), "solid geometry hides the locked Titan anchor")
 	blocker.queue_free()
 	await _ticks(8)
 	Input.action_press("grapple_left")

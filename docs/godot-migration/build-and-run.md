@@ -42,6 +42,10 @@ GODOT_BIN=godot godot-client/tools/build.sh macos
 | H hoặc dấu backtick, Esc hoặc P | Giữ để mở bản đồ chiến thuật, mở menu tạm dừng |
 | G, 1–4, giữ E | Ping, quick chat, hồi sinh đồng đội trong co-op |
 
+## Chất lượng hình ảnh
+
+Trong **Settings → Graphics quality**, mức Low tắt MSAA và bóng, Medium dùng MSAA 2×, High dùng MSAA 4×. Cả ba mức giữ độ phân giải 3D bằng độ phân giải canvas. High tăng lọc dị hướng để chi tiết tường và mái dễ đọc hơn khi nhìn xiên.
+
 ## Kiểm thử và tạo lại dữ liệu
 
 ```bash

@@ -1,6 +1,7 @@
 class_name ValkenburgCity
 extends Node3D
 
+const DetailedDistrict := preload("res://world/detailed_district.gd")
 const GameData := preload("res://resources/game_data.gd")
 const TRAINING_RINGS := [Vector3(0, 12, -25), Vector3(0, 15, -52), Vector3(14, 16, -78)]
 
@@ -11,6 +12,8 @@ var rings: Array[MeshInstance3D] = []
 var city_bodies: Array[StaticBody3D] = []
 
 var _material_cache: Dictionary = {}
+var _district := DetailedDistrict.new()
+var _sun := DirectionalLight3D.new()
 
 func _ready() -> void:
 	var layout: Dictionary = GameData.get_data().city
@@ -21,6 +24,8 @@ func _ready() -> void:
 	_build_ground(float(layout.halfSize))
 	_build_walls(layout)
 	_build_towers(layout.towers)
+	_district.name = "DetailedDistrict"
+	add_child(_district)
 	_build_districts(layout.buildings)
 	_build_depots(layout.supplyStations)
 	_build_trees(layout.trees)
@@ -79,12 +84,19 @@ func _build_districts(buildings: Array) -> void:
 		var roof_height: float = building.roofHeight
 		var index := int(building.index)
 		_box_collision(GameData.vec(building.colliderCenter), GameData.vec(building.halfExtents) * 2, building.label)
+		if _has_detailed_facade(base):
+			_district.add_building(base, width, depth, building.totalColliderH, roof_height)
+			continue
 		_box(base + Vector3.UP * height * 0.5, Vector3(width, height, depth), facades[index % facades.size()])
 		var roof := _mesh(_cylinder(0, maxf(width, depth) * 0.74, roof_height, 4),
 			base + Vector3.UP * (height + roof_height * 0.5),
 			_material("3d4856" if index % 4 == 0 else "9b3b2a"))
 		roof.rotation.y = PI / 4.0
 		_box(base + Vector3.UP * height * 0.65, Vector3(width + 1.2, 0.8, depth + 1.2), _material("3b281e"))
+
+func _has_detailed_facade(base: Vector3) -> bool:
+	return (absf(base.x) == 26.0 and (base.z < 0.0 or base.z == 52.0)) \
+		or (absf(base.x) == 52.0 and absf(base.z) == 26.0)
 
 func _build_depots(depots: Array) -> void:
 	for point: Array in depots:
@@ -132,25 +144,29 @@ func _build_trees(trees: Array) -> void:
 func _light_world() -> void:
 	var world_env := WorldEnvironment.new()
 	var environment := Environment.new()
+	var sky_material := ProceduralSkyMaterial.new()
+	sky_material.sky_top_color = Color("405b78")
+	sky_material.sky_horizon_color = Color("b5c4cb")
+	sky_material.ground_horizon_color = Color("b5c4cb")
+	sky_material.ground_bottom_color = Color("464d53")
 	var sky := Sky.new()
-	sky.sky_material = ProceduralSkyMaterial.new()
+	sky.sky_material = sky_material
 	environment.background_mode = Environment.BG_SKY
 	environment.sky = sky
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	environment.ambient_light_color = Color("c3d5e9")
-	environment.ambient_light_energy = 0.65
+	environment.ambient_light_color = Color("c6d7e6")
+	environment.ambient_light_energy = 0.50
 	environment.fog_enabled = true
-	environment.fog_light_color = Color("9ab2c9")
-	environment.fog_density = 0.002
+	environment.fog_light_color = Color("a7b8c4")
+	environment.fog_density = 0.0014
 	world_env.environment = environment
 	add_child(world_env)
-	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-49, -36, 0)
-	sun.light_color = Color("fff0d7")
-	sun.light_energy = 1.25
-	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 125
-	add_child(sun)
+	_sun.name = "Sun"
+	_sun.rotation_degrees = Vector3(-41, -54, 0)
+	_sun.light_color = Color("fff0d7")
+	_sun.light_energy = 1.03
+	_sun.shadow_enabled = true
+	add_child(_sun)
 
 func set_training(enabled: bool) -> void:
 	for ring in rings:
@@ -184,9 +200,20 @@ func nearby_depot(feet: Vector3) -> bool:
 	return false
 
 func set_quality(quality: int) -> void:
-	var light := get_children().filter(func(node: Node) -> bool: return node is DirectionalLight3D)[0] as DirectionalLight3D
-	light.shadow_enabled = quality > 0
-	light.directional_shadow_max_distance = 125 if quality >= 2 else 75
+	var viewport := get_viewport()
+	viewport.scaling_3d_scale = 1.0
+	match quality:
+		0:
+			viewport.msaa_3d = Viewport.MSAA_DISABLED
+			viewport.anisotropic_filtering_level = Viewport.ANISOTROPY_2X
+		1:
+			viewport.msaa_3d = Viewport.MSAA_2X
+			viewport.anisotropic_filtering_level = Viewport.ANISOTROPY_4X
+		_:
+			viewport.msaa_3d = Viewport.MSAA_4X
+			viewport.anisotropic_filtering_level = Viewport.ANISOTROPY_8X
+	_sun.shadow_enabled = quality > 0
+	_sun.directional_shadow_max_distance = 105.0 if quality >= 2 else 70.0
 
 func _box_collision(center: Vector3, size: Vector3, label: String, grappleable := true) -> void:
 	var shape := BoxShape3D.new()

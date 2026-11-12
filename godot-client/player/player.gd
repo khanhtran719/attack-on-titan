@@ -70,7 +70,7 @@ var locked_target_position: Variant = null
 var grabbed_by: Node3D
 var grab_escape_progress: float = 0.0
 var grab_hold_remaining: float = 0.0
-var grapple_preview: Dictionary = {}
+var grapple_previews: Array[Dictionary] = [{}, {}]
 var downed: bool = false
 
 var camera: OrbitCamera
@@ -244,6 +244,8 @@ func respawn(feet: Vector3, facing: float = PI) -> void:
 	_clear_grab()
 	locked_target = null
 	locked_target_position = null
+	grapple_previews = [{}, {}]
+	_preview_time = 0.0
 	total_grapples_fired = 0
 	total_boost_time = 0.0
 	total_swings_time = 0.0
@@ -645,9 +647,17 @@ func _update_presentation(dt: float) -> void:
 	odm.update_visuals(left_winch, right_winch)
 
 	_preview_time -= dt
-	if _preview_time <= 0.0 and not is_dead():
+	if _preview_time <= 0.0:
 		_preview_time = 0.10
-		grapple_preview = odm.probe(global_position, camera.global_position, camera.forward(), 0, locked_target)
+		_update_grapple_previews()
+
+
+func _update_grapple_previews() -> void:
+	var can_grapple := control_enabled and not is_dead() and not downed and not is_grabbed() and gas > 1.0
+	var aim := camera.forward()
+	var origin := camera.global_position
+	grapple_previews[0] = odm.probe(global_position, origin, aim, -1, locked_target) if can_grapple and not odm.left_hook.active else {}
+	grapple_previews[1] = odm.probe(global_position, origin, aim, 1, locked_target) if can_grapple and not odm.right_hook.active else {}
 
 
 func _marker_world(marker: Node3D, default_offset: Vector3) -> Vector3:

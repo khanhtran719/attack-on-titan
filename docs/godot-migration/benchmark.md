@@ -39,3 +39,17 @@ node --import tsx --test --test-name-pattern=benchmark godot-client/tests/browse
 ## Chỉ số chưa đo đủ
 
 Chưa có đường chạy dài cùng camera/input, hiệu ứng dày, workload 4 người, 50/100/200 ms RTT hay bộ số liệu memory, draw calls và frame time qua nhiều thiết bị. So sánh đầu vào/ACK và reconnect cục bộ nằm trong test co-op, còn latency ở mạng thực chưa đo. Một benchmark nhiều thiết bị cần khóa viewport/DPR, chất lượng, route, seed và browser, chạy ít nhất 3 lần lặp và đo input correction, peak memory, cold start và RTT bên cạnh FPS.
+
+## So sánh trước và sau đợt chỉnh đồ họa Godot
+
+Dùng cùng đầu vào ở Training trên Chrome 157, Apple M1 Pro và viewport 1280 × 720, DPR 1. Đo thời gian khung hình qua `requestAnimationFrame` trong một lượt chạy 6,1 giây qua phố và một lượt ODM 2,25 giây cho mỗi bản. Chrome ghi nhận cấp phát renderbuffer MSAA 4× ở mức High của bản sau.
+
+| Phép đo | Pilot trước | Sau khi chỉnh |
+|---|---:|---:|
+| FPS trung bình khi chạy qua phố | 60,0 | 60,0 |
+| p95 frame time khi chạy qua phố | 16,8 ms | 16,7 ms |
+| FPS trung bình khi dùng ODM | 60,0 | 60,0 |
+| p95 frame time khi dùng ODM | 16,7 ms | 16,8 ms |
+| PCK Web | 4,25 MB | 2,21 MB |
+
+Bản sau dùng lại cùng bộ texture cho 12 căn nhà và nén bản đồ màu khi import. Ở DPR 2, kiểm tra riêng xác nhận canvas CSS 1280 × 720 có buffer 2560 × 1440 và dùng MSAA 4×. Phép đo FPS chỉ bao phủ DPR 1, ở mức trần 60 FPS của lần chạy Chrome này.

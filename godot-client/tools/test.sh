@@ -12,7 +12,7 @@ if grep -q 'SCRIPT ERROR' "$logs/import.out"; then
   exit 1
 fi
 
-for test in tests/world_test.gd tools/bake-rigs-check.gd tests/traversal_smoke.gd \
+for test in tests/odm_hud_test.gd tests/world_test.gd tools/bake-rigs-check.gd tests/traversal_smoke.gd \
     tests/traversal_gameplay.gd tests/combat_test.gd tests/titan_test.gd tests/game_flow.gd \
     tests/feedback.gd tests/network-interpolation.gd; do
   name="$(basename "$test" .gd)"

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { buildNormalTitanBody, buildNormalTitanScar } from './NormalTitanVisual';
 
 export type TitanVariant = 'normal' | 'abnormal' | 'large';
 
@@ -43,6 +44,7 @@ function buildSkinnedPart(params: {
   oz?: number;
   boneA: number;
   boneB: number;
+  blendToChild?: boolean;
   colorHex: number;
 }): THREE.BufferGeometry {
   const geo = new THREE.CylinderGeometry(
@@ -61,14 +63,17 @@ function buildSkinnedPart(params: {
   const colors = new Float32Array(count * 3);
   const c = new THREE.Color(params.colorHex);
 
-  const minY = params.oy - params.len * 0.5;
-  const invL = 1 / Math.max(0.001, params.len);
+  const top = params.oy + params.len * 0.5;
+  const positions = geo.getAttribute('position');
 
   for (let i = 0; i < count; i++) {
     skinIndex[i * 4 + 0] = params.boneA;
     skinIndex[i * 4 + 1] = params.boneB;
-    skinWeight[i * 4 + 0] = 1.0;
-    skinWeight[i * 4 + 1] = 0.0;
+    const towardChild = params.blendToChild
+      ? THREE.MathUtils.smoothstep((top - positions.getY(i)) / params.len, 0.72, 1)
+      : 0;
+    skinWeight[i * 4 + 0] = 1 - towardChild;
+    skinWeight[i * 4 + 1] = towardChild;
     colors[i * 3 + 0] = c.r;
     colors[i * 3 + 1] = c.g;
     colors[i * 3 + 2] = c.b;
@@ -88,6 +93,7 @@ function buildSkinnedSphere(params: {
   cy: number;
   cz: number;
   boneIdx: number;
+  lowerBoneIdx?: number;
   colorHex: number;
 }): THREE.BufferGeometry {
   const geo = new THREE.SphereGeometry(1, 14, 12);
@@ -99,10 +105,16 @@ function buildSkinnedSphere(params: {
   const skinWeight = new Float32Array(count * 4);
   const colors = new Float32Array(count * 3);
   const c = new THREE.Color(params.colorHex);
+  const positions = geo.getAttribute('position');
 
   for (let i = 0; i < count; i++) {
     skinIndex[i * 4 + 0] = params.boneIdx;
-    skinWeight[i * 4 + 0] = 1.0;
+    const lowerInfluence = params.lowerBoneIdx === undefined ? 0 : THREE.MathUtils.smoothstep(
+      (params.cy + params.ry - positions.getY(i)) / (2 * params.ry), 0.3, 0.85
+    );
+    if (params.lowerBoneIdx !== undefined) skinIndex[i * 4 + 1] = params.lowerBoneIdx;
+    skinWeight[i * 4 + 0] = 1 - lowerInfluence;
+    skinWeight[i * 4 + 1] = lowerInfluence;
     colors[i * 3 + 0] = c.r;
     colors[i * 3 + 1] = c.g;
     colors[i * 3 + 2] = c.b;
@@ -121,8 +133,10 @@ export class TitanRigBuilder {
    */
   public static buildTitanRig(
     variant: TitanVariant,
-    heightMeters: number
+    heightMeters: number,
+    visualPolish = false
   ): TitanRigAssets {
+    const polish = variant === 'normal' && visualPolish;
     const rootGroup = new THREE.Group();
     const scaleGroup = new THREE.Group();
     const scaleFactor = heightMeters / 2.0;
@@ -195,7 +209,14 @@ export class TitanRigBuilder {
 
     const bulk = variant === 'large' ? 1.24 : variant === 'abnormal' ? 0.94 : 1.05;
 
-    const parts: THREE.BufferGeometry[] = [
+    const upperBody = polish ? [
+      ...buildNormalTitanBody({ hips: iHips, spine: iSpine, spine1: iSpine1, chest: iChest, neck: iNeck, head: iHead }),
+      buildSkinnedSphere({ rx: 0.092, ry: 0.049, rz: 0.084, cx: 0, cy: 1.815, cz: 0.077, boneIdx: iJaw, colorHex: 0xbb8974 }),
+      buildSkinnedSphere({ rx: 0.060, ry: 0.013, rz: 0.018, cx: 0, cy: 1.819, cz: 0.150, boneIdx: iJaw, colorHex: 0x603e37 }),
+      buildSkinnedSphere({ rx: 0.025, ry: 0.039, rz: 0.035, cx: 0, cy: 1.875, cz: 0.148, boneIdx: iHead, colorHex: 0xc99a81 }),
+      ...[-1, 1].map(side => buildSkinnedSphere({ rx: 0.050, ry: 0.017, rz: 0.023, cx: side * 0.054, cy: 1.922, cz: 0.151, boneIdx: iHead, colorHex: 0xa67460 })),
+      buildSkinnedSphere({ rx: 0.150, ry: 0.103, rz: 0.150, cx: 0, cy: 1.957, cz: -0.022, boneIdx: iHead, colorHex: 0x39302b }),
+    ] : [
       // Pelvis
       buildSkinnedPart({
         rTop: 0.19 * bulk,
@@ -289,16 +310,21 @@ export class TitanRigBuilder {
         colorHex: hairColor,
       }),
 
+    ];
+
+    const parts: THREE.BufferGeometry[] = [
+      ...upperBody,
       // Left Arm
       buildSkinnedSphere({
-        rx: 0.11 * bulk,
-        ry: 0.11 * bulk,
-        rz: 0.11 * bulk,
+        rx: (polish ? 0.121 : 0.11) * bulk,
+        ry: (polish ? 0.142 : 0.11) * bulk,
+        rz: (polish ? 0.120 : 0.11) * bulk,
         cx: -0.28,
-        cy: 1.66,
+        cy: polish ? 1.629 : 1.66,
         cz: 0,
         boneIdx: iLShoulder,
-        colorHex: skinSecondary,
+        lowerBoneIdx: polish ? iLUpperArm : undefined,
+        colorHex: polish ? 0xc99a83 : skinSecondary,
       }),
       buildSkinnedPart({
         rTop: 0.088 * bulk,
@@ -308,6 +334,7 @@ export class TitanRigBuilder {
         oy: 1.49,
         boneA: iLUpperArm,
         boneB: iLLowerArm,
+        blendToChild: polish,
         colorHex: skinPrimary,
       }),
       buildSkinnedPart({
@@ -318,6 +345,7 @@ export class TitanRigBuilder {
         oy: 1.16,
         boneA: iLLowerArm,
         boneB: iLHand,
+        blendToChild: polish,
         colorHex: skinPrimary,
       }),
       buildSkinnedSphere({
@@ -333,14 +361,15 @@ export class TitanRigBuilder {
 
       // Right Arm
       buildSkinnedSphere({
-        rx: 0.11 * bulk,
-        ry: 0.11 * bulk,
-        rz: 0.11 * bulk,
+        rx: (polish ? 0.121 : 0.11) * bulk,
+        ry: (polish ? 0.142 : 0.11) * bulk,
+        rz: (polish ? 0.120 : 0.11) * bulk,
         cx: 0.28,
-        cy: 1.66,
+        cy: polish ? 1.629 : 1.66,
         cz: 0,
         boneIdx: iRShoulder,
-        colorHex: skinSecondary,
+        lowerBoneIdx: polish ? iRUpperArm : undefined,
+        colorHex: polish ? 0xc99a83 : skinSecondary,
       }),
       buildSkinnedPart({
         rTop: 0.088 * bulk,
@@ -350,6 +379,7 @@ export class TitanRigBuilder {
         oy: 1.49,
         boneA: iRUpperArm,
         boneB: iRLowerArm,
+        blendToChild: polish,
         colorHex: skinPrimary,
       }),
       buildSkinnedPart({
@@ -360,6 +390,7 @@ export class TitanRigBuilder {
         oy: 1.16,
         boneA: iRLowerArm,
         boneB: iRHand,
+        blendToChild: polish,
         colorHex: skinPrimary,
       }),
       buildSkinnedSphere({
@@ -382,6 +413,7 @@ export class TitanRigBuilder {
         oy: 0.72,
         boneA: iLUpperLeg,
         boneB: iLLowerLeg,
+        blendToChild: polish,
         colorHex: skinPrimary,
       }),
       buildSkinnedPart({
@@ -392,6 +424,7 @@ export class TitanRigBuilder {
         oy: 0.26,
         boneA: iLLowerLeg,
         boneB: iLFoot,
+        blendToChild: polish,
         colorHex: skinSecondary,
       }),
       buildSkinnedSphere({
@@ -414,6 +447,7 @@ export class TitanRigBuilder {
         oy: 0.72,
         boneA: iRUpperLeg,
         boneB: iRLowerLeg,
+        blendToChild: polish,
         colorHex: skinPrimary,
       }),
       buildSkinnedPart({
@@ -424,6 +458,7 @@ export class TitanRigBuilder {
         oy: 0.26,
         boneA: iRLowerLeg,
         boneB: iRFoot,
+        blendToChild: polish,
         colorHex: skinSecondary,
       }),
       buildSkinnedSphere({
@@ -461,9 +496,9 @@ export class TitanRigBuilder {
     // Glowing Eyes on Head Bone
     // =========================================================================
     const eyeMat = new THREE.MeshBasicMaterial({
-      color: variant === 'abnormal' ? 0xff4500 : 0xffcc33,
+      color: polish ? 0xd7ae68 : variant === 'abnormal' ? 0xff4500 : 0xffcc33,
     });
-    const eyeGeo = new THREE.SphereGeometry(0.022, 8, 8);
+    const eyeGeo = new THREE.SphereGeometry(polish ? 0.014 : 0.022, 8, 8);
     [-1, 1].forEach((side) => {
       const eye = new THREE.Mesh(eyeGeo, eyeMat);
       eye.position.set(side * 0.052, 0.03, 0.14);
@@ -480,14 +515,9 @@ export class TitanRigBuilder {
     bonesByName['Neck'].add(napeNode);
 
     // Subtle visual scar/weakpoint highlight on the back of the neck
-    const napeMarkerMat = new THREE.MeshBasicMaterial({
-      color: 0xff2e4c,
-      transparent: true,
-      opacity: 0.72,
-    });
-    const napeMarkerMesh = new THREE.Mesh(
+    const napeMarkerMesh = polish ? buildNormalTitanScar(napeNode.position) : new THREE.Mesh(
       new THREE.BoxGeometry(0.11, 0.15, 0.045),
-      napeMarkerMat
+      new THREE.MeshBasicMaterial({ color: 0xff2e4c, transparent: true, opacity: 0.72 })
     );
     napeNode.add(napeMarkerMesh);
 

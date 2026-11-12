@@ -539,7 +539,7 @@ func _ping_actions() -> void:
 func _update_hud() -> void:
 	if mode.is_empty():
 		return
-	var hint := "F Strike   ·   V Thunder Spear   ·   Esc Menu"
+	var hint := ""
 	if player.downed:
 		hint = "DOWNED   /   %.1f s   ·   Revive %.0f%%" % [_mine.get("downedTimer", 0.0), float(_mine.get("reviveProgress", 0.0)) * 100.0]
 	elif player.is_grabbed():
@@ -549,8 +549,9 @@ func _update_hud() -> void:
 	elif player.blade_durability <= 0 and player.spare_blades > 0:
 		hint = "R  /  Replace dulled blades"
 	elif ui.screen == "play" and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-		hint = "Click to aim   ·   F Strike   ·   V Thunder Spear"
-	var in_range := not player.grapple_preview.is_empty()
+		hint = "Click to aim"
+	elif mode == "training" and mission.stage == 2 and player.odm.any_active():
+		hint = "Hold Shift to boost"
 	var debug := "%s FPS   ·   %s draws" % [Engine.get_frames_per_second(), Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)] if save.settings.debug.showPerformanceOverlay else ""
 	if save.settings.debug.showAIStates and combat.has_target():
 		debug += "\n%s · %s" % [combat.locked.variant, combat.locked.state]
@@ -560,8 +561,9 @@ func _update_hud() -> void:
 		"network": "%s ms" % coop.rtt_ms if mode == "coop" else "",
 		"health": player.health, "gas": player.gas, "blade": player.blade_durability,
 		"spare_blades": player.spare_blades, "thunder_spears": player.thunder_spears,
-		"hook_left": "‹●" if player.odm.left_hook.active else ("‹+" if in_range else "‹"),
-		"hook_right": "●›" if player.odm.right_hook.active else ("+›" if in_range else "›"),
+		"left_ready": player.gas > 1.0 and not player.grapple_previews[0].is_empty(),
+		"right_ready": player.gas > 1.0 and not player.grapple_previews[1].is_empty(),
+		"left_latched": player.odm.left_hook.active, "right_latched": player.odm.right_hook.active,
 		"hint": hint, "debug": debug,
 	})
 	if mode == "coop":

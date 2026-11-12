@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { createVanguardCloak, createVanguardTankAssembly, createVanguardWinchHousing } from './VanguardVisual';
 
 export type PlayerAnimName =
   | 'Idle'
@@ -179,7 +180,7 @@ function createSkinnedRigidGeometry(
 }
 
 export class HumanoidRigBuilder {
-  public static buildPlayerRig(): PlayerRigAssets {
+  public static buildPlayerRig(visualPolish = false): PlayerRigAssets {
     const rootGroup = new THREE.Group();
     rootGroup.name = 'VanguardStriderRoot';
 
@@ -257,13 +258,13 @@ export class HumanoidRigBuilder {
     // =========================================================================
     // 2. Build Unified Anatomical SkinnedMesh Geometry (Bind-Pose World Coords)
     // =========================================================================
-    const colTrousers = 0xe8e4dc; // White/cream military breeches
-    const colBoots = 0x3b2618;    // Dark leather riding boots & harness
-    const colStrap = 0x2a1b12;    // Darker harness straps
+    const colTrousers = visualPolish ? 0xd9d2b8 : 0xe8e4dc; // White/cream military breeches
+    const colBoots = visualPolish ? 0x483328 : 0x3b2618;    // Dark leather riding boots & harness
+    const colStrap = visualPolish ? 0x553629 : 0x2a1b12;    // Darker harness straps
     const colBuckle = 0xb8925a;   // Brass buckles
-    const colJacket = 0x7c4d32;   // Cropped amber-brown scout jacket
+    const colJacket = visualPolish ? 0x9d6849 : 0x7c4d32;   // Cropped amber-brown scout jacket
     const colShirt = 0x263240;    // Dark slate inner tunic
-    const colCape = 0x1e4d38;     // Deep hunter-green Vanguard cloak
+    const colCape = visualPolish ? 0x38674e : 0x1e4d38;     // Deep hunter-green Vanguard cloak
     const colSkin = 0xf4ccb0;     // Warm anime skin tone
     const colLip = 0xc98a7c;
     const colHair = 0x1d1f26;     // Raven dark hair
@@ -451,30 +452,46 @@ export class HumanoidRigBuilder {
     }
 
     // ---------------- Cape (Survey-style cloak with emblem) ----------------
-    limb('cape', {
-      radiusTop: 0.18, radiusBottom: 0.23, length: 0.32, offsetY: 1.36, offsetZ: -0.12,
-      scaleZ: 0.14, boneIndexA: iCapeTop, boneIndexB: iCapeMid, colorHex: colCape,
-    });
-    limb('cape', {
-      radiusTop: 0.23, radiusBottom: 0.28, length: 0.32, offsetY: 1.06, offsetZ: -0.15,
-      scaleZ: 0.13, boneIndexA: iCapeMid, boneIndexB: iCapeTip, colorHex: colCape,
-    });
-    // Hood folded around the collar
-    limb('cape', {
-      radiusTop: 0.1, radiusBottom: 0.16, length: 0.07, offsetY: 1.53, offsetZ: -0.03,
-      scaleZ: 0.85, boneIndexA: iCapeTop, boneIndexB: null, colorHex: colCape, openEnded: true,
-    });
-    // Wings-style emblem (two overlapping wing shapes, white + blue)
-    rigid('cape', new THREE.CircleGeometry(0.06, 12), iCapeMid, colEmblemB, (g) => {
-      g.scale(0.8, 1, 1);
-      g.rotateY(Math.PI);
-      g.translate(0.025, 1.3, -0.152);
-    });
-    rigid('cape', new THREE.CircleGeometry(0.06, 12), iCapeMid, colEmblemW, (g) => {
-      g.scale(0.8, 1, 1);
-      g.rotateY(Math.PI);
-      g.translate(-0.025, 1.3, -0.153);
-    });
+    if (visualPolish) {
+      add('cape', createVanguardCloak([
+        { index: iCapeTop, height: ctx.bonePos[iCapeTop].y },
+        { index: iCapeMid, height: ctx.bonePos[iCapeMid].y },
+        { index: iCapeTip, height: ctx.bonePos[iCapeTip].y },
+      ]));
+      ellip('cape', {
+        rx: 0.138, ry: 0.051, rz: 0.089, cx: 0, cy: 1.53, cz: -0.082,
+        boneIndex: iCapeTop, colorHex: colCape, segments: 14,
+      });
+      limb('cape', {
+        radiusTop: 0.057, radiusBottom: 0.073, length: 0.050, offsetY: 1.57, scaleZ: 0.88,
+        boneIndexA: iNeck, boneIndexB: null, colorHex: 0x873b39, openEnded: true,
+      });
+    } else {
+      limb('cape', {
+        radiusTop: 0.18, radiusBottom: 0.23, length: 0.32, offsetY: 1.36, offsetZ: -0.12,
+        scaleZ: 0.14, boneIndexA: iCapeTop, boneIndexB: iCapeMid, colorHex: colCape,
+      });
+      limb('cape', {
+        radiusTop: 0.23, radiusBottom: 0.28, length: 0.32, offsetY: 1.06, offsetZ: -0.15,
+        scaleZ: 0.13, boneIndexA: iCapeMid, boneIndexB: iCapeTip, colorHex: colCape,
+      });
+      // Hood folded around the collar
+      limb('cape', {
+        radiusTop: 0.1, radiusBottom: 0.16, length: 0.07, offsetY: 1.53, offsetZ: -0.03,
+        scaleZ: 0.85, boneIndexA: iCapeTop, boneIndexB: null, colorHex: colCape, openEnded: true,
+      });
+      // Wings-style emblem (two overlapping wing shapes, white + blue)
+      rigid('cape', new THREE.CircleGeometry(0.06, 12), iCapeMid, colEmblemB, (g) => {
+        g.scale(0.8, 1, 1);
+        g.rotateY(Math.PI);
+        g.translate(0.025, 1.3, -0.152);
+      });
+      rigid('cape', new THREE.CircleGeometry(0.06, 12), iCapeMid, colEmblemW, (g) => {
+        g.scale(0.8, 1, 1);
+        g.rotateY(Math.PI);
+        g.translate(-0.025, 1.3, -0.153);
+      });
+    }
 
     // ---------------- Arms ----------------
     // Bone world refs: Shoulder y=1.53, UpperArm x=±0.19, LowerArm y=1.26, Hand y=1.01
@@ -545,7 +562,7 @@ export class HumanoidRigBuilder {
       });
       // Thigh harness straps (two rings + vertical connector)
       [0.82, 0.62].forEach((y, k) =>
-        rigid('leather', new THREE.TorusGeometry(k === 0 ? 0.086 : 0.072, 0.0075, 5, 20), upper, colStrap, (g) => {
+        rigid('leather', new THREE.TorusGeometry(k === 0 ? 0.086 : 0.072, visualPolish ? 0.011 : 0.0075, 5, 20), upper, colStrap, (g) => {
           g.rotateX(Math.PI / 2);
           g.translate(x + s * 0.005, y, 0);
         })
@@ -553,6 +570,11 @@ export class HumanoidRigBuilder {
       rigid('leather', new THREE.BoxGeometry(0.012, 0.22, 0.02), upper, colStrap, (g) =>
         g.translate(x + s * 0.08, 0.72, 0)
       );
+      if (visualPolish) {
+        rigid('leather', new THREE.BoxGeometry(0.028, 0.032, 0.014), upper, colBuckle, (g) =>
+          g.translate(x + s * 0.032, 0.82, -0.089)
+        );
+      }
       // Knee
       ellip('leather', {
         rx: 0.06, ry: 0.06, rz: 0.06, cx: x, cy: 0.48, cz: 0.005,
@@ -619,19 +641,19 @@ export class HumanoidRigBuilder {
     // 3. Attach Detailed ODM Gear (Scabbards, Gas Tanks, Winches, Thruster)
     // =========================================================================
     const metalMat = new THREE.MeshStandardMaterial({
-      color: 0x9ca3af,
-      roughness: 0.32,
-      metalness: 0.82,
+      color: visualPolish ? 0xaebcc1 : 0x9ca3af,
+      roughness: visualPolish ? 0.38 : 0.32,
+      metalness: visualPolish ? 0.42 : 0.82,
     });
     const darkSteelMat = new THREE.MeshStandardMaterial({
-      color: 0x272c35,
+      color: visualPolish ? 0x3b4b51 : 0x272c35,
       roughness: 0.45,
-      metalness: 0.7,
+      metalness: visualPolish ? 0.35 : 0.7,
     });
     const brassMat = new THREE.MeshStandardMaterial({
-      color: 0xd4a853,
+      color: visualPolish ? 0xcc9a55 : 0xd4a853,
       roughness: 0.35,
-      metalness: 0.75,
+      metalness: visualPolish ? 0.46 : 0.75,
     });
 
     const odmGroup = new THREE.Group();
@@ -660,18 +682,20 @@ export class HumanoidRigBuilder {
 
       // Blade Scabbard Box
       const scabbard = new THREE.Mesh(
-        new THREE.BoxGeometry(0.07, 0.16, 0.68),
+        visualPolish ? createVanguardWinchHousing() : new THREE.BoxGeometry(0.07, 0.16, 0.68),
         darkSteelMat
       );
       rigSide.add(scabbard);
 
       // Pressurized Gas Tank mounted above scabbard
       const tank = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.042, 0.042, 0.56, 10),
+        visualPolish ? createVanguardTankAssembly(side) : new THREE.CylinderGeometry(0.042, 0.042, 0.56, 10),
         metalMat
       );
-      tank.rotation.x = Math.PI / 2;
-      tank.position.set(side * 0.02, 0.11, -0.02);
+      if (!visualPolish) {
+        tank.rotation.x = Math.PI / 2;
+        tank.position.set(side * 0.02, 0.11, -0.02);
+      }
       rigSide.add(tank);
 
       // Coiled Wire Winch Drum at front hip

@@ -3,6 +3,7 @@ extends CanvasLayer
 
 signal action(name: String, payload: Variant)
 
+const OdmReticle := preload("res://ui/odm_reticle.gd")
 const Tactical := preload("res://ui/tactical_map.gd")
 const GameData := preload("res://resources/game_data.gd")
 const INK := Color("0d191d")
@@ -11,6 +12,11 @@ const MUTED := Color("a6b9b7")
 const CYAN := Color("5ed8c5")
 const GOLD := Color("e9bc80")
 const RED := Color("ee8879")
+const HUD_ICONS := {
+	"health": preload("res://assets/hud/health.png"),
+	"gas": preload("res://assets/hud/gas.png"),
+	"blade": preload("res://assets/hud/blade.png"),
+}
 
 var screen := ""
 var root: Control
@@ -24,7 +30,11 @@ var meters: Dictionary
 var gear: Label
 var hint: Label
 var banner: Label
-var crosshair: Label
+var crosshair: OdmReticle
+var _hint_panel: PanelContainer
+var _gas_fill: StyleBoxFlat
+var _gas_warning_fill: StyleBoxFlat
+var _low_gas := false
 var marker: Label
 var debug_line: Label
 var _focus: Button
@@ -219,9 +229,16 @@ func update_hud(view: Dictionary) -> void:
 	stats.text = "%s  /  %s PTS\n%s m/s    %s" % [_clock(view.elapsed), view.score, roundi(view.speed), view.network]
 	for key: String in meters:
 		meters[key].value = view[key]
-	gear.text = "%s spare blades     %s Thunder Spears" % [view.spare_blades, view.thunder_spears]
-	crosshair.text = "%s   ·   %s" % [view.hook_left, view.hook_right]
+	var low_gas: bool = view.gas <= 20.0
+	if _low_gas != low_gas:
+		_low_gas = low_gas
+		meters.gas.add_theme_stylebox_override("fill", _gas_warning_fill if low_gas else _gas_fill)
+		gear.add_theme_color_override("font_color", GOLD if low_gas else MUTED)
+	gear.text = ("LOW GAS %d%%  ·  %d blades  ·  %d spears" % [roundi(view.gas), view.spare_blades, view.thunder_spears]
+		if low_gas else "%d spare blades  ·  %d Thunder Spears" % [view.spare_blades, view.thunder_spears])
+	crosshair.update_hooks(view.left_ready, view.right_ready, view.left_latched, view.right_latched)
 	hint.text = view.hint
+	_hint_panel.visible = not hint.text.is_empty()
 	debug_line.text = view.debug
 
 func show_marker(camera: Camera3D, point: Vector3, text: String, tint: Color = GOLD) -> void:
@@ -268,34 +285,47 @@ func _build_hud() -> void:
 	root.add_child(hud)
 	hud.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var objective_panel := _hud_panel()
+	_corner(objective_panel, Control.PRESET_TOP_LEFT, Rect2(24, 22, 560, 94))
 	var left := VBoxContainer.new()
-	left.position = Vector2(28, 24)
 	left.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	hud.add_child(left)
-	mission = _label("", 14, CYAN)
-	objective = _label("", 24, PAPER)
+	objective_panel.add_child(left)
+	mission = _label("", 13, CYAN)
+	objective = _label("", 23, PAPER)
 	detail = _label("", 15, MUTED)
+	detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	for node in [mission, objective, detail]:
 		left.add_child(node)
-	stats = _label("", 18, PAPER)
+	var stats_panel := _hud_panel()
+	_corner(stats_panel, Control.PRESET_TOP_RIGHT, Rect2(-210, 22, 186, 66))
+	stats = _label("", 16, PAPER)
 	stats.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_corner(stats, Control.PRESET_TOP_RIGHT, Rect2(-300, 24, 272, 60))
+	stats_panel.add_child(stats)
+	var supplies_panel := _hud_panel()
+	_corner(supplies_panel, Control.PRESET_BOTTOM_LEFT, Rect2(24, -145, 292, 123))
 	var supplies := VBoxContainer.new()
-	_corner(supplies, Control.PRESET_BOTTOM_LEFT, Rect2(28, -150, 255, 126))
+	supplies.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	supplies_panel.add_child(supplies)
+	_gas_fill = _box(CYAN, CYAN, 0)
+	_gas_warning_fill = _box(GOLD, GOLD, 0)
 	for entry in [["health", "HEALTH", RED], ["gas", "ODM GAS", CYAN], ["blade", "BLADE EDGE", GOLD]]:
 		_meter(supplies, entry[0], entry[1], entry[2])
-	gear = _label("", 15, MUTED)
+	gear = _label("", 14, MUTED)
 	supplies.add_child(gear)
-	crosshair = _label("", 25, PAPER)
-	crosshair.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	crosshair.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_corner(crosshair, Control.PRESET_CENTER, Rect2(-130, -20, 260, 40))
+	crosshair = OdmReticle.new()
+	crosshair.name = "OdmReticle"
+	_corner(crosshair, Control.PRESET_CENTER, Rect2(-42, -15, 84, 30))
 	banner = _label("", 21, GOLD)
 	banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_corner(banner, Control.PRESET_CENTER, Rect2(-370, -115, 740, 40))
-	hint = _label("", 17, CYAN)
+	var hint_center := CenterContainer.new()
+	_corner(hint_center, Control.PRESET_CENTER_BOTTOM, Rect2(-300, -68, 600, 42))
+	_hint_panel = _hud_panel()
+	hint_center.add_child(_hint_panel)
+	hint = _label("", 16, PAPER)
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_corner(hint, Control.PRESET_CENTER_BOTTOM, Rect2(-380, -68, 760, 33))
+	_hint_panel.add_child(hint)
+	_hint_panel.hide()
 	debug_line = _label("", 14, MUTED)
 	debug_line.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_corner(debug_line, Control.PRESET_BOTTOM_RIGHT, Rect2(-410, -90, 382, 68))
@@ -317,9 +347,26 @@ func _build_hud() -> void:
 	tactical.hide()
 	hud.hide()
 
+func _hud_panel() -> PanelContainer:
+	var panel := PanelContainer.new()
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var box := _box(Color("101b21e8"), Color("7e96965e"), 9.0)
+	box.content_margin_left = 13.0
+	box.content_margin_right = 13.0
+	panel.add_theme_stylebox_override("panel", box)
+	return panel
+
 func _meter(parent: VBoxContainer, key: String, caption: String, tint: Color) -> void:
 	var row := HBoxContainer.new()
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(row)
+	var icon := TextureRect.new()
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon.texture = HUD_ICONS[key]
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon.custom_minimum_size = Vector2(16, 16)
+	row.add_child(icon)
 	var title := _label(caption, 13, MUTED)
 	title.custom_minimum_size.x = 85
 	row.add_child(title)
